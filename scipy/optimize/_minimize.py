@@ -17,7 +17,7 @@ import numpy as np
 
 # unconstrained minimization
 from .optimize import (_minimize_neldermead, _minimize_powell, _minimize_cg,
-                       _minimize_bfgs, _minimize_newtoncg,
+                       _minimize_bfgs,_minimize_olmoq,_minimize_olnaq,_minimize_olbfgs,_minimize_sr1, _minimize_newtoncg,
                        _minimize_scalar_brent, _minimize_scalar_bounded,
                        _minimize_scalar_golden, MemoizeJac)
 from ._trustregion_dogleg import _minimize_dogleg
@@ -616,6 +616,14 @@ def minimize(fun, x0, args=(), method=None, jac=None, hess=None,
         return _minimize_cg(fun, x0, args, jac, callback, **options)
     elif meth == 'bfgs':
         return _minimize_bfgs(fun, x0, args, jac, callback, **options)
+    elif meth == 'olmoq':
+        return _minimize_olmoq(fun, x0, args, jac, callback, **options)
+    elif meth == 'olnaq':
+        return _minimize_olnaq(fun, x0, args, jac, callback, **options)
+    elif meth == 'olbfgs':
+        return _minimize_olbfgs(fun, x0, args, jac, callback, **options)
+    elif meth == 'sr1':
+        return _minimize_sr1(fun, x0, args, jac, callback, **options)
     elif meth == 'newton-cg':
         return _minimize_newtoncg(fun, x0, args, jac, hess, hessp, callback,
                                   **options)
