@@ -1442,6 +1442,322 @@ def _minimize_bfgs(fun, x0, args=(), jac=None, callback=None,
     return result
 
 
+
+def _minimize_obfgs(fun, x0, args=(), jac=None, callback=None,
+                     gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, err=[], timeplot=[],
+                     disp=False, return_all=False, vk_vec=None, sk_vec=None, yk_vec=None, m=8, alpha_k=1.0, mu=None,
+                     dirNorm=True,Hk_mat=None,
+                     **unknown_options):
+    '''
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac` is approximated, use this value for the step size.
+    '''
+
+    _check_unknown_options(unknown_options)
+    f = fun
+    fprime = jac
+    epsilon = eps
+    retall = return_all
+
+    xk = asarray(x0).flatten()
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+
+    func_calls, f = wrap_function(f, args)
+    if fprime is None:
+        grad_calls, myfprime = wrap_function(approx_fprime, (f, epsilon))
+    else:
+        grad_calls, myfprime = wrap_function(fprime, args)
+
+    import time
+    start = time.time()
+    k = len(Hk_mat)
+
+    if k == 0:
+        N = len(x0)
+        I = np.eye(N, dtype=int)
+        Hk = I
+    else:
+        Hk = Hk_mat[0]
+
+    gfk = myfprime(xk)
+    pk = -np.dot(Hk, gfk)
+
+
+
+    if dirNorm == True:
+        pk = pk / vecnorm(pk, 2)  # direction normalization
+
+    sk = alpha_k[0] * pk
+    xkp1 = xk + sk
+
+    #sk_vec.append(sk)
+
+    gfkp1 = myfprime(xkp1)
+    yk = gfkp1 - gfk + sk
+    #yk_vec.append(yk)
+
+    xk = xkp1
+
+    rhok_inv = np.dot(yk, sk)
+    # this was handled in numeric, let it remaines for more safety
+    if rhok_inv == 0.:
+        rhok = 1000.0
+        if disp:
+            print("Divide-by-zero encountered: rhok assumed large")
+    else:
+        rhok = 1. / rhok_inv
+
+    A1 = I - sk[:, np.newaxis] * yk[np.newaxis, :] * rhok
+    A2 = I - yk[:, np.newaxis] * sk[np.newaxis, :] * rhok
+    Hk = np.dot(A1, np.dot(Hk, A2)) + (rhok * sk[:, np.newaxis] *
+                                       sk[np.newaxis, :])
+
+    Hk_mat.append(Hk)
+
+    end = time.time()
+    timeplot.append(end - start)
+
+    err.append(f(xk))
+    if callback is not None:
+        callback(xk)
+    k += 1
+
+    result = OptimizeResult(fun=0, jac=0, hess_inv=0, nfev=0,
+                            njev=0, status=0,
+                            success=(0), message=0, x=xkp1,
+                            nit=k)
+
+    return result
+
+
+def _minimize_onaq(fun, x0, args=(), jac=None, callback=None,
+                    gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, err=[], timeplot=[],
+                    disp=False, return_all=False, vk_vec=None, sk_vec=None, yk_vec=None, m=8, alpha_k=1.0, muk=None,
+                    dirNorm=True, Hk_mat=None,
+                    **unknown_options):
+    '''
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac` is approximated, use this value for the step size.
+    '''
+    mu = muk[0]
+    _check_unknown_options(unknown_options)
+    f = fun
+    fprime = jac
+    epsilon = eps
+    retall = return_all
+
+    xk = asarray(x0).flatten()
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+
+    func_calls, f = wrap_function(f, args)
+    if fprime is None:
+        grad_calls, myfprime = wrap_function(approx_fprime, (f, epsilon))
+    else:
+        grad_calls, myfprime = wrap_function(fprime, args)
+
+    vk = vk_vec[0]
+    k = len(Hk_mat)
+
+    import time
+    start = time.time()
+    if k == 0:
+        print("Parameters: ", len(xk))
+        N = len(x0)
+        I = np.eye(N, dtype=int)
+        Hk = I
+    else:
+        Hk = Hk_mat[0]
+
+
+    gfk = myfprime(xk + mu * vk)
+    pk = -np.dot(Hk, gfk)
+
+    if dirNorm == True:
+        pk = pk / vecnorm(pk, 2)  # direction normalization
+
+    vkp1 = mu * vk + alpha_k[0] * pk
+    xkp1 = xk + vkp1
+    sk = xkp1 - (xk + mu * vk)
+    vk_vec.append(vkp1)
+    #sk_vec.append(sk)
+
+    gfkp1 = myfprime(xkp1)
+    yk = gfkp1 - gfk + sk
+    #yk_vec.append(yk)
+    xk = xkp1
+
+    rhok_inv = np.dot(yk, sk)
+    # this was handled in numeric, let it remaines for more safety
+    if rhok_inv == 0.:
+        rhok = 1000.0
+        if disp:
+            print("Divide-by-zero encountered: rhok assumed large")
+    else:
+        rhok = 1. / rhok_inv
+
+    A1 = I - sk[:, np.newaxis] * yk[np.newaxis, :] * rhok
+    A2 = I - yk[:, np.newaxis] * sk[np.newaxis, :] * rhok
+    Hk = np.dot(A1, np.dot(Hk, A2)) + (rhok * sk[:, np.newaxis] *
+                                       sk[np.newaxis, :])
+
+    Hk_mat.append(Hk)
+
+    end = time.time()
+
+    if callback is not None:
+        callback(xk)
+    k += 1
+    timeplot.append(end - start)
+    err.append(f(xk))
+
+    result = OptimizeResult(fun=0, jac=0, hess_inv=0, nfev=0,
+                            njev=0, status=0,
+                            success=(0), message=0, x=xkp1,
+                            nit=k)
+
+    return result
+
+
+def _minimize_omoq(fun, x0, args=(), jac=None, callback=None,
+                    gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, err=[], timeplot=[],
+                    disp=False, return_all=False, vk_vec=None, sk_vec=None, yk_vec=None, m=8, alpha_k=1.0, muk=None,
+                    dirNorm=True, gfk_vec=None, Hk_mat=None,
+                    **unknown_options):
+    '''
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac` is approximated, use this value for the step size.
+    '''
+    mu = muk[0]
+    _check_unknown_options(unknown_options)
+    f = fun
+    fprime = jac
+    epsilon = eps
+    retall = return_all
+
+    xk = asarray(x0).flatten()
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+
+    func_calls, f = wrap_function(f, args)
+    if fprime is None:
+        grad_calls, myfprime = wrap_function(approx_fprime, (f, epsilon))
+    else:
+        grad_calls, myfprime = wrap_function(fprime, args)
+
+    vk = vk_vec[0]
+    k = len(Hk_mat)
+    import time
+    start = time.time()
+    if k == 0:
+        print("Parameters: ", len(xk))
+        grad_val = myfprime(xk + mu * vk)
+        gfk_vec.append(grad_val)
+        gfk_vec.append(grad_val)
+        N = len(x0)
+        I = np.eye(N, dtype=int)
+        Hk = I
+    else:
+        Hk = Hk_mat[0]
+
+    # curr_grad = myfprime(xk)
+    gfk = (1 + mu) * gfk_vec[1] - mu * gfk_vec[0]
+    # gfk = curr_grad + mu * (gfk_vec[1] - gfk_vec[0])
+
+    pk = -np.dot(Hk, gfk)
+
+
+    if dirNorm == True:
+        pk = pk / vecnorm(pk, 2)  # direction normalization
+
+    vkp1 = mu * vk + alpha_k[0] * pk
+    xkp1 = xk + vkp1
+    sk = xkp1 - (xk + mu * vk)
+    vk_vec.append(vkp1)
+    #sk_vec.append(sk)
+
+    gfkp1 = myfprime(xkp1)
+    gfk_vec.append(gfkp1)
+    yk = gfkp1 - gfk + sk
+    #yk_vec.append(yk)
+
+    rhok_inv = np.dot(yk, sk)
+    # this was handled in numeric, let it remaines for more safety
+    if rhok_inv == 0.:
+        rhok = 1000.0
+        if disp:
+            print("Divide-by-zero encountered: rhok assumed large")
+    else:
+        rhok = 1. / rhok_inv
+
+    A1 = I - sk[:, np.newaxis] * yk[np.newaxis, :] * rhok
+    A2 = I - yk[:, np.newaxis] * sk[np.newaxis, :] * rhok
+    Hk = np.dot(A1, np.dot(Hk, A2)) + (rhok * sk[:, np.newaxis] *
+                                       sk[np.newaxis, :])
+
+    Hk_mat.append(Hk)
+
+    xk = xkp1
+
+    end = time.time()
+    timeplot.append(end - start)
+
+    if callback is not None:
+        callback(xk)
+    k += 1
+    err.append(f(xk))
+
+    result = OptimizeResult(fun=0, jac=0, hess_inv=0, nfev=0,
+                            njev=0, status=0,
+                            success=(0), message=0, x=xkp1,
+                            nit=k)
+
+    return result
+
+
+
+
+
 def _minimize_olbfgs(fun, x0, args=(), jac=None, callback=None,
                      gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, err=[], timeplot=[],
                      disp=False, return_all=False, vk_vec=None, sk_vec=None, yk_vec=None, m=8, alpha_k=1.0, mu=None,
@@ -4118,8 +4434,11 @@ def show_options(solver=None, method=None, disp=True):
         'minimize': (
             ('bfgs', 'scipy.optimize.optimize._minimize_bfgs'),
             ('olmoq', 'scipy.optimize.optimize._minimize_olmoq'),
-            ('olnaq', 'scipy.optimize.optimize._minimize_olnaqq'),
+            ('olnaq', 'scipy.optimize.optimize._minimize_olnaq'),
             ('olbfgs', 'scipy.optimize.optimize._minimize_olbfgs'),
+            ('omoq', 'scipy.optimize.optimize._minimize_omoq'),
+            ('onaq', 'scipy.optimize.optimize._minimize_onaq'),
+            ('obfgs', 'scipy.optimize.optimize._minimize_obfgs'),
             ('sr1', 'scipy.optimize.optimize._minimize_sr1'),
             ('cg', 'scipy.optimize.optimize._minimize_cg'),
             ('cobyla', 'scipy.optimize.cobyla._minimize_cobyla'),
