@@ -1756,6 +1756,741 @@ def _minimize_omoq(fun, x0, args=(), jac=None, callback=None,
 
 
 
+def _minimize_lbfgs(fun, x0, args=(), jac=None, callback=None, errPlot=[], timePlot=[], evalPlot=[], LS=[], GEV=[], m=10,
+                   gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, mu=0.8, sk_vec=None, yk_vec=None,
+                   disp=False, return_all=False, finite_diff_rel_step=None, etol=None, nevs=None,
+                   **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    import time
+    # start_time = time.time()
+    # timePlot.append(0)
+    # theta_k = 1
+    # LS = []
+    # GEV = []
+    TLR = []
+    GC = []
+
+    old_fval = f(x0)
+    #gfk = myfprime(x0)
+
+    #GEV.append(time.time())
+    gfk = myfprime(x0)
+    #GEV[-1] = time.time() - GEV[-1]
+
+    errPlot.append(old_fval)
+    timePlot.append(0)
+    evalPlot.append(0)
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+
+    # Sets the initial step guess to dx ~ 1
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0
+    #vk = np.zeros_like(x0)
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+
+    #tot_start_time = time.time()
+    tot_start_time = time.time()
+    while (gnorm > gtol) and (k < maxiter):
+        if etol != None and old_fval < etol : break
+        start_time = time.time()#time.time()
+        """
+        theta_kp1 = ((1e-5 - (theta_k * theta_k)) + np.sqrt(
+            ((1e-5 - (theta_k * theta_k)) * (1e-5 - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0)
+        theta_k = theta_kp1
+        xmuv = xk + mu * vk
+        """
+        #gfk = myfprime(xmuv)
+        TLR.append(time.time())
+        pk = -gfk
+        a = []
+        idx = min(k, m)
+        for i in range(min(k, m)):
+            a.append(np.dot(sk_vec[idx - 1 - i].T, pk) / np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+            pk = pk - a[i] * yk_vec[idx - 1 - i]
+        if k > 0:
+            term = 0
+            for i in range(min(k, m)):
+                term = term + (np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]) / np.dot(yk_vec[idx - 1 - i].T,
+                                                                                           yk_vec[idx - 1 - i]))
+            pk = pk * term / idx
+        else:
+            pk = 1e-10 * pk
+        for i in reversed(range(min(k, m))):
+            b = np.dot(yk_vec[idx - 1 - i].T, pk) / np.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+            pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+
+        pknorm = vecnorm(pk, ord=norm)
+        if pknorm > 1000:
+            delta = 1e-7
+        else:
+            delta = 1e-4
+        TLR[-1] = time.time() - TLR[-1]
+        LS.append(time.time())
+        LHS = f(xk + pk)
+        old_old_fval = f(xk)
+        gfk_times_pk = np.dot(gfk.T, pk)
+        RHS = old_old_fval + 1e-3 * gfk_times_pk
+        alpha_k = 1
+        LS[-1] = time.time() - LS[-1]
+
+        for line1 in range(10):
+            if LHS < RHS :
+                old_fval = LHS
+                break
+            LS.append(time.time())
+            alpha_k *= 0.5
+            LHS = f(xk + alpha_k * pk)
+            RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+            LS[-1] = time.time()-LS[-1]
+        sk = alpha_k * pk
+        #vkp1 = mu * vk + alpha_k * pk
+        #vk = mu * vk + sk
+        #xkp1 = xk + vkp1
+        xk = xk + sk
+
+        # if retall:
+        #    allvecs.append(xkp1)
+        #sk = xkp1 - (xk + mu * vk)
+
+        #gfkp1 = myfprime(xkp1)
+        GEV.append(time.time())
+        gfkp1 = myfprime(xk)
+        GEV[-1] = time.time() - GEV[-1]
+
+        GC.append(time.time())
+        yk = gfkp1 - gfk
+        # Global convergence
+        p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const
+        yk = yk + zeta * gnorm * sk
+        GC[-1] = time.time() - GC[-1]
+        sk_vec.append(sk)
+        yk_vec.append(yk)
+        gfk = gfkp1
+        #xk = xkp1
+        #vk = vkp1
+
+        # if callback is not None:
+        #    callback(xk)
+        k += 1
+        gnorm = vecnorm(gfk, ord=norm)
+        # if (gnorm <= gtol):
+        #    break
+
+        # if not np.isfinite(old_fval):
+        # We correctly found +-Inf as optimal value, or something went
+        # wrong.
+        #    warnflag = 2
+        #    break
+        end_time = time.time()
+
+        timePlot.append(end_time - start_time)
+        errPlot.append(old_fval)
+        evalPlot.append(sf.nfev + sf.ngev)
+    fval = old_fval
+    #tot_end_time = time.time()
+    tot_end_time = time.time()
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Algorithm: %s" % "lbfgs")
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+        print("         Linesearch evaluations: %d" % len(LS))
+        print("         Total evaluations: %d" % (sf.ngev + sf.nfev))
+        print("         Avg Time per Iteration: %f" % np.mean(timePlot))
+        print("         Avg Time per FEV: %f" % np.mean(LS))
+        print("         Avg Time per GEV: %f" % np.mean(GEV))
+        print("         Avg Time per GC: %f" % np.mean(GC))
+        print("         Avg Time per TLR: %f" % np.mean(TLR))
+        print("         Time Taken: %f" % (tot_end_time-tot_start_time))
+
+    nevs.append(fval)
+    nevs.append(k)
+    nevs.append(sf.nfev)
+    nevs.append(sf.ngev)
+    nevs.append(tot_end_time-tot_start_time)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
+
+
+def _minimize_lnaq(fun, x0, args=(), jac=None, callback=None, errPlot=[], timePlot=[], evalPlot=[],  LS=[], GEV=[],m=10,
+                   gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, mu=0.8, sk_vec=None, yk_vec=None,
+                   disp=False, return_all=False, finite_diff_rel_step=None, etol=None, nevs=None,
+                   **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    old_fval = f(x0)
+    gfk = myfprime(x0)
+    errPlot.append(old_fval)
+    timePlot.append(0)
+    evalPlot.append(0)
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+
+    # Sets the initial step guess to dx ~ 1
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0
+    vk = np.zeros_like(x0)
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+    import time
+    # start_time = time.time()
+    # timePlot.append(0)
+    theta_k = 1
+    #LS = []
+    TLR = []
+    #GEV = []
+    GC = []
+    MC = []
+    #tot_start_time = time.time()
+    tot_start_time = time.time()
+    while (gnorm > gtol) and (k < maxiter):
+        if etol != None and old_fval < etol : break
+        start_time = time.time()#time.time()
+        MC.append(time.time())
+        theta_kp1 = ((1e-5 - (theta_k * theta_k)) + np.sqrt(
+            ((1e-5 - (theta_k * theta_k)) * (1e-5 - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0.95)
+        theta_k = theta_kp1
+        MC[-1] = time.time() - MC[-1]
+        #mu = 0
+        xmuv = xk + mu * vk
+
+        GEV.append(time.time())
+        gfk = myfprime(xmuv)
+        GEV[-1] = time.time() - GEV[-1]
+
+        TLR.append(time.time())
+        pk = -gfk
+        a = []
+        idx = min(k, m)
+        for i in range(min(k, m)):
+            a.append(np.dot(sk_vec[idx - 1 - i].T, pk) / np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+            pk = pk - a[i] * yk_vec[idx - 1 - i]
+        if k > 0:
+            term = 0
+            for i in range(min(k, m)):
+                term = term + (np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]) / np.dot(yk_vec[idx - 1 - i].T,
+                                                                                           yk_vec[idx - 1 - i]))
+            pk = pk * term / idx
+        else:
+            pk = 1e-10 * pk
+        for i in reversed(range(min(k, m))):
+            b = np.dot(yk_vec[idx - 1 - i].T, pk) / np.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+            pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+
+        pknorm = vecnorm(pk, ord=norm)
+        if pknorm > 1000:
+            delta = 1e-7
+        else:
+            delta = 1e-4
+        TLR[-1] = time.time() - TLR[-1]
+        LS.append(time.time())
+        LHS = f(xmuv + pk)
+        old_old_fval = f(xmuv)
+        gfk_times_pk = np.dot(gfk.T, pk)
+        RHS = old_old_fval + 1e-3 * gfk_times_pk
+        alpha_k = 1
+        LS[-1] = time.time() - LS[-1]
+        #numLS = 1
+        for line1 in range(10):
+            if LHS < RHS:
+                old_fval = LHS
+                break
+            #numLS += 1
+            LS.append(time.time())
+            alpha_k *= 0.5
+            LHS = f(xmuv + alpha_k * pk)
+            RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+            LS[-1] = time.time() - LS[-1]
+        #nLS.append(numLS)
+        sk = alpha_k * pk
+        #vkp1 = mu * vk + alpha_k * pk
+        vk = mu * vk + sk
+        #xkp1 = xk + vkp1
+        xk = xk + vk
+
+        # if retall:
+        #    allvecs.append(xkp1)
+        #sk = xkp1 - (xk + mu * vk)
+
+        #gfkp1 = myfprime(xkp1)
+        GEV.append(time.time())
+        gfkp1 = myfprime(xk)
+        GEV[-1] = time.time() - GEV[-1]
+
+        GC.append(time.time())
+        yk = gfkp1 - gfk
+        # Global convergence
+        p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const
+        yk = yk + zeta * gnorm * sk
+        GC[-1] = time.time() - GC[-1]
+        sk_vec.append(sk)
+        yk_vec.append(yk)
+        gfk = gfkp1
+        #xk = xkp1
+        #vk = vkp1
+
+        # if callback is not None:
+        #    callback(xk)
+        k += 1
+        gnorm = vecnorm(gfk, ord=norm)
+        # if (gnorm <= gtol):
+        #    break
+
+        # if not np.isfinite(old_fval):
+        # We correctly found +-Inf as optimal value, or something went
+        # wrong.
+        #    warnflag = 2
+        #    break
+        end_time = time.time()
+
+        timePlot.append(end_time - start_time)
+        errPlot.append(old_fval)
+        evalPlot.append(sf.nfev + sf.ngev)
+    fval = old_fval
+    #tot_end_time = time.time()
+    tot_end_time = time.time()
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Algorithm: %s" % "lnaq")
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+        print("         Linesearch evaluations: %d" % len(LS))
+        print("         Total evaluations: %d" % (sf.ngev + sf.nfev))
+        print("         Avg Time per Iteration: %f" % np.mean(timePlot))
+        print("         Avg Time per FEV: %f" % np.mean(LS))
+        print("         Avg Time per GEV: %f" % np.mean(GEV))
+        print("         Avg Time per GC: %f" % np.mean(GC))
+        print("         Avg Time per TLR: %f" % np.mean(TLR))
+        print("         Avg Time per MC: %f" % np.mean(MC))
+        print("         Time Taken: %f" % (tot_end_time - tot_start_time))
+
+    nevs.append(fval)
+    nevs.append(k)
+    nevs.append(sf.nfev)
+    nevs.append(sf.ngev)
+    nevs.append(tot_end_time-tot_start_time)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
+def _minimize_lmoq(fun, x0, args=(), jac=None, callback=None, errPlot=[], timePlot=[], m=10, evalPlot=[],  LS=[], GEV=[],nevs=None,
+                   gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, mu=0.8, sk_vec=None, yk_vec=None,
+                   disp=False, return_all=False, finite_diff_rel_step=None, etol=None,
+                   **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    old_fval = f(x0)
+    gfk = myfprime(x0)
+    timePlot.append(0)
+    evalPlot.append(0)
+    errPlot.append(old_fval)
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0
+    vk = np.zeros_like(x0)
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+    import time
+
+    # timePlot.append(0)
+    gfkm1 = gfk
+    theta_k = 1
+    #LS = []
+    TLR = []
+    #GEV = []
+    GC = []
+    MC = []
+    #tot_start_time = time.time()
+    tot_start_time = time.time()
+    while (gnorm > gtol) and (k < maxiter) :
+        if etol != None and old_fval < etol : break
+        start_time = time.time()
+        MC.append(time.time())
+        theta_kp1 = ((1e-5 - (theta_k * theta_k)) + np.sqrt(
+            ((1e-5 - (theta_k * theta_k)) * (1e-5 - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0.95)
+        theta_k = theta_kp1
+        MC[-1] = time.time() - MC[-1]
+        #mu = 0
+        # if k >0:
+        xmuv = xk + mu * vk
+        #ogfk = myfprime(xmuv)
+        agfk = (1 + mu) * gfk - mu * gfkm1
+        # else: agfk=gfk
+        TLR.append(time.time())
+        pk = -agfk
+        a = []
+        idx = min(k, m)
+        for i in range(min(k, m)):
+            a.append(np.dot(sk_vec[idx - 1 - i].T, pk) / np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+            pk = pk - a[i] * yk_vec[idx - 1 - i]
+        if k > 0:
+            term = 0
+            for i in range(min(k, m)):
+                term = term + (np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]) / np.dot(yk_vec[idx - 1 - i].T,
+                                                                                           yk_vec[idx - 1 - i]))
+            pk = pk * term / idx
+        else:
+            pk = 1e-10 * pk
+        for i in reversed(range(min(k, m))):
+            b = np.dot(yk_vec[idx - 1 - i].T, pk) / np.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+            pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+
+        pknorm = vecnorm(pk, ord=norm)
+        if pknorm > 1000:
+            delta = 1e-7
+        else:
+            delta = 1e-4
+        TLR[-1] = time.time() - TLR[-1]
+
+        #gfkp1 = myfprime(xmuv)
+        LS.append(time.time())
+        LHS = f(xmuv + pk)
+        old_old_fval = f(xmuv)
+        agfk_times_pk = np.dot(agfk.T, pk)
+        RHS = old_old_fval + 1e-3 * agfk_times_pk
+        alpha_k = 1
+        LS[-1] = time.time() - LS[-1]
+        for line1 in range(10):
+            if LHS < RHS :
+                old_fval = LHS
+                break
+            LS.append(time.time())
+            alpha_k *= 0.5
+            LHS = f(xmuv + alpha_k * pk)
+            RHS = old_old_fval + 1e-3 * alpha_k * agfk_times_pk
+            LS[-1] = time.time()-LS[-1]
+        # vkp1 = mu * vk + alpha_k * pk
+        # xkp1 = xk + vkp1
+        sk = alpha_k * pk
+        vk = mu * vk + sk
+        xk = xk + vk
+
+        # if retall:
+        #    allvecs.append(xkp1)
+        # sk = xkp1 - (xk + mu * vk)
+        gfkm1 = gfk
+        # gfkp1 = myfprime(xkp1)
+        GEV.append(time.time())
+        gfk = myfprime(xk)
+        GEV[-1] = time.time() - GEV[-1]
+
+        GC.append(time.time())
+        yk = gfk - agfk
+        # yk = gfkp1 - agfk
+        # Global convergence
+        p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const
+        yk = yk + zeta * gnorm * sk
+        GC[-1] = time.time() - GC[-1]
+        sk_vec.append(sk)
+        yk_vec.append(yk)
+        # gfkm1 = gfk
+        # gfk = gfkp1
+        # xk = xkp1
+        # vk = vkp1
+
+        # if callback is not None:
+        #    callback(xk)
+        k += 1
+        gnorm = vecnorm(gfk, ord=norm)
+        # if (gnorm <= gtol):
+        #    break
+
+        # if not np.isfinite(old_fval):
+        # We correctly found +-Inf as optimal value, or something went
+        # wrong.
+        #    warnflag = 2
+        #    break
+
+        end_time = time.time()
+        timePlot.append(end_time - start_time)
+        errPlot.append(old_fval)
+        evalPlot.append(sf.nfev + sf.ngev)
+    fval = old_fval
+    #tot_end_time = time.time()
+    tot_end_time = time.time()
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Algorithm: %s" % "lmoq")
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+        print("         Linesearch evaluations: %d" % len(LS))
+        print("         Total evaluations: %d" % (sf.ngev + sf.nfev))
+        print("         Avg Time per Iteration: %f" % np.mean(timePlot))
+        print("         Avg Time per FEV: %f" % np.mean(LS))
+        print("         Avg Time per GEV: %f" % np.mean(GEV))
+        print("         Avg Time per GC: %f" % np.mean(GC))
+        print("         Avg Time per TLR: %f" % np.mean(TLR))
+        print("         Avg Time per MC: %f" % np.mean(MC))
+        print("         Time Taken: %f" % (tot_end_time - tot_start_time))
+
+    nevs.append(fval)
+    nevs.append(k)
+    nevs.append(sf.nfev)
+    nevs.append(sf.ngev)
+    nevs.append(tot_end_time-tot_start_time)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
 
 
 def _minimize_olbfgs(fun, x0, args=(), jac=None, callback=None,
@@ -2039,11 +2774,385 @@ def _minimize_olmoq(fun, x0, args=(), jac=None, callback=None,
 
     return result
 
+def rootFinder(a,b,c):
+  """return the root of (a * x^2) + b*x + c =0"""
+  r = b**2 - 4*a*c
 
-def _minimize_sr1(fun, x0, args=(), jac=None, callback=None,
-                  gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, errHistory=None,
-                  disp=False, return_all=False, finite_diff_rel_step=None,
-                  **unknown_options):
+  if r > 0:
+      num_roots = 2
+      x1 = ((-b) + np.sqrt(r))/(2*a+0.0)
+      x2 = ((-b) - np.sqrt(r))/(2*a+0.0)
+      x = max(x1,x2)
+      if x>=0:
+        return x
+      else:
+        print("no positive root!")
+  elif r == 0:
+      num_roots = 1
+      x = (-b) / (2*a+0.0)
+      if x>=0:
+        return x
+      else:
+        print("no positive root!")
+  else:
+      print("No roots")
+
+def CG_Steinhaug_matFree(epsTR, g, deltak, S, Y, nv):
+    """
+    The following function is used for sloving the trust region subproblem
+    by utilizing "CG_Steinhaug" algorithm discussed in
+    Nocedal, J., & Wright, S. J. (2006). Nonlinear Equations (pp. 270-302). Springer New York.;
+    moreover, for Hessian-free implementation, we used the compact form of Hessian
+    approximation discussed in Byrd, Richard H., Jorge Nocedal, and Robert B. Schnabel.
+    "Representations of quasi-Newton matrices and their use in limited memory methods."
+    Mathematical Programming 63.1-3 (1994): 129-156
+    """
+    from numpy import linalg as LA
+
+    zOld = np.zeros((nv, 1))
+    rOld = g
+    dOld = -g
+    trsLoop = 1e-12
+    if LA.norm(rOld) < epsTR:
+        return zOld
+    flag = True
+    pk = np.zeros((nv, 1))
+
+    # for Hessfree
+    L = np.zeros((Y.shape[1], Y.shape[1]))
+    for ii in range(Y.shape[1]):
+        for jj in range(0, ii):
+            L[ii, jj] = S[:, ii].dot(Y[:, jj])
+
+    tmp = np.sum((S * Y), axis=0)
+
+    D = np.diag(tmp)
+    M = (D + L + L.T)
+    Minv = np.linalg.inv(M)
+
+    while flag:
+
+        ################
+        tmp1 = np.matmul(Y.T, dOld)
+        tmp2 = np.matmul(Minv, tmp1)
+        Bk_d = np.matmul(Y, tmp2)
+
+        ################
+
+        if dOld.T.dot(Bk_d) < trsLoop:
+            tau = rootFinder(LA.norm(dOld) ** 2, 2 * zOld.T.dot(dOld), (LA.norm(zOld) ** 2 - deltak ** 2))
+            pk = zOld + tau * dOld
+            flag = False
+            break
+        alphaj = rOld.T.dot(rOld) / (dOld.T.dot(Bk_d))
+        zNew = zOld + alphaj * dOld
+
+        if LA.norm(zNew) >= deltak:
+            tau = rootFinder(LA.norm(dOld) ** 2, 2 * zOld.T.dot(dOld), (LA.norm(zOld) ** 2 - deltak ** 2))
+            pk = zOld + tau * dOld
+            flag = False
+            break
+        rNew = rOld + alphaj * Bk_d
+
+        if LA.norm(rNew) < epsTR:
+            pk = zNew
+            flag = False
+            break
+        betajplus1 = rNew.T.dot(rNew) / (rOld.T.dot(rOld))
+        dNew = -rNew + betajplus1 * dOld
+
+        zOld = zNew
+        dOld = dNew
+        rOld = rNew
+    return pk
+
+
+def sample_pairs_SY_SLSR1(X, y, num_weights, mmr, radius, eps, dnn, numHessEval, sess):
+    """ Function that computes SY pairs for S-LSR1 method"""
+
+    Stemp = radius * np.random.randn(num_weights, mmr)
+    Ytemp = np.squeeze(sess.run([dnn.Hvs], feed_dict={dnn.x: X, dnn.y: y, dnn.vecs: Stemp})).T
+    numHessEval += 1
+    S = np.zeros((num_weights, 0))
+    Y = np.zeros((num_weights, 0))
+
+    counterSucc = 0
+    for idx in range(mmr):
+
+        L = np.zeros((Y.shape[1], Y.shape[1]))
+        for ii in range(Y.shape[1]):
+            for jj in range(0, ii):
+                L[ii, jj] = S[:, ii].dot(Y[:, jj])
+
+        tmp = np.sum((S * Y), axis=0)
+        D = np.diag(tmp)
+        M = (D + L + L.T)
+        Minv = np.linalg.inv(M)
+
+        tmp1 = np.matmul(Y.T, Stemp[:, idx])
+        tmp2 = np.matmul(Minv, tmp1)
+        Bksk = np.squeeze(np.matmul(Y, tmp2))
+        yk_BkskDotsk = (Ytemp[:, idx] - Bksk).T.dot(Stemp[:, idx])
+        if np.abs(np.squeeze(yk_BkskDotsk)) > (
+                eps * (LA.norm(Ytemp[:, idx] - Bksk) * LA.norm(Stemp[:, idx]))):
+            counterSucc += 1
+
+            S = np.append(S, Stemp[:, idx].reshape(num_weights, 1), axis=1)
+            Y = np.append(Y, Ytemp[:, idx].reshape(num_weights, 1), axis=1)
+
+    return S, Y, counterSucc, numHessEval
+
+
+
+def _minimize_trlbfgs(fun, x0, args=(), jac=None, callback=None, errPlot=[], timePlot=[], evalPlot=[], LS=[], GEV=[], m=10,
+                   gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, mu=0.8, sk_vec=None, yk_vec=None,
+                   disp=False, return_all=False, finite_diff_rel_step=None, etol=None, nevs=None,
+                   **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    import time
+    # start_time = time.time()
+    # timePlot.append(0)
+    # theta_k = 1
+    # LS = []
+    # GEV = []
+    TLR = []
+    GC = []
+
+    old_fval = f(x0)
+    #gfk = myfprime(x0)
+
+    #GEV.append(time.time())
+    gfk = myfprime(x0)
+    #GEV[-1] = time.time() - GEV[-1]
+
+    errPlot.append(old_fval)
+    timePlot.append(0)
+    evalPlot.append(0)
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+
+    # Sets the initial step guess to dx ~ 1
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0
+    #vk = np.zeros_like(x0)
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+
+    #tot_start_time = time.time()
+    tot_start_time = time.time()
+    while (gnorm > gtol) and (k < maxiter):
+        if etol != None and old_fval < etol : break
+        start_time = time.time()#time.time()
+        """
+        theta_kp1 = ((1e-5 - (theta_k * theta_k)) + np.sqrt(
+            ((1e-5 - (theta_k * theta_k)) * (1e-5 - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0)
+        theta_k = theta_kp1
+        xmuv = xk + mu * vk
+        """
+        #gfk = myfprime(xmuv)
+        TLR.append(time.time())
+        pk = -gfk
+        a = []
+        idx = min(k, m)
+        for i in range(min(k, m)):
+            a.append(np.dot(sk_vec[idx - 1 - i].T, pk) / np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+            pk = pk - a[i] * yk_vec[idx - 1 - i]
+        if k > 0:
+            term = 0
+            for i in range(min(k, m)):
+                term = term + (np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]) / np.dot(yk_vec[idx - 1 - i].T,
+                                                                                           yk_vec[idx - 1 - i]))
+            pk = pk * term / idx
+        else:
+            pk = 1e-10 * pk
+        for i in reversed(range(min(k, m))):
+            b = np.dot(yk_vec[idx - 1 - i].T, pk) / np.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+            pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+
+        pknorm = vecnorm(pk, ord=norm)
+        if pknorm > 1000:
+            delta = 1e-7
+        else:
+            delta = 1e-4
+        TLR[-1] = time.time() - TLR[-1]
+        LS.append(time.time())
+        LHS = f(xk + pk)
+        old_old_fval = f(xk)
+        gfk_times_pk = np.dot(gfk.T, pk)
+        RHS = old_old_fval + 1e-3 * gfk_times_pk
+        alpha_k = 1
+        LS[-1] = time.time() - LS[-1]
+
+        for line1 in range(10):
+            if LHS < RHS :
+                old_fval = LHS
+                break
+            LS.append(time.time())
+            alpha_k *= 0.5
+            LHS = f(xk + alpha_k * pk)
+            RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+            LS[-1] = time.time()-LS[-1]
+        sk = alpha_k * pk
+        #vkp1 = mu * vk + alpha_k * pk
+        #vk = mu * vk + sk
+        #xkp1 = xk + vkp1
+        xk = xk + sk
+
+        # if retall:
+        #    allvecs.append(xkp1)
+        #sk = xkp1 - (xk + mu * vk)
+
+        #gfkp1 = myfprime(xkp1)
+        GEV.append(time.time())
+        gfkp1 = myfprime(xk)
+        GEV[-1] = time.time() - GEV[-1]
+
+        GC.append(time.time())
+        yk = gfkp1 - gfk
+        # Global convergence
+        p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const
+        yk = yk + zeta * gnorm * sk
+        GC[-1] = time.time() - GC[-1]
+        sk_vec.append(sk)
+        yk_vec.append(yk)
+        gfk = gfkp1
+        #xk = xkp1
+        #vk = vkp1
+
+        # if callback is not None:
+        #    callback(xk)
+        k += 1
+        gnorm = vecnorm(gfk, ord=norm)
+        # if (gnorm <= gtol):
+        #    break
+
+        # if not np.isfinite(old_fval):
+        # We correctly found +-Inf as optimal value, or something went
+        # wrong.
+        #    warnflag = 2
+        #    break
+        end_time = time.time()
+
+        timePlot.append(end_time - start_time)
+        errPlot.append(old_fval)
+        evalPlot.append(sf.nfev + sf.ngev)
+    fval = old_fval
+    #tot_end_time = time.time()
+    tot_end_time = time.time()
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Algorithm: %s" % "lbfgs")
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+        print("         Linesearch evaluations: %d" % len(LS))
+        print("         Total evaluations: %d" % (sf.ngev + sf.nfev))
+        print("         Avg Time per Iteration: %f" % np.mean(timePlot))
+        print("         Avg Time per FEV: %f" % np.mean(LS))
+        print("         Avg Time per GEV: %f" % np.mean(GEV))
+        print("         Avg Time per GC: %f" % np.mean(GC))
+        print("         Avg Time per TLR: %f" % np.mean(TLR))
+        print("         Time Taken: %f" % (tot_end_time-tot_start_time))
+
+    nevs.append(fval)
+    nevs.append(k)
+    nevs.append(sf.nfev)
+    nevs.append(sf.ngev)
+    nevs.append(tot_end_time-tot_start_time)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
+
+
+def _minimize_trlnaq(fun, x0, args=(), jac=None, callback=None, errPlot=[], timePlot=[], evalPlot=[],  LS=[], GEV=[],m=10,
+                   gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, mu=0.8, sk_vec=None, yk_vec=None,
+                   disp=False, return_all=False, finite_diff_rel_step=None, etol=None, nevs=None,
+                   **unknown_options):
     """
     Minimization of scalar function of one or more variables using the
     BFGS algorithm.
@@ -2091,7 +3200,9 @@ def _minimize_sr1(fun, x0, args=(), jac=None, callback=None,
 
     old_fval = f(x0)
     gfk = myfprime(x0)
-
+    errPlot.append(old_fval)
+    timePlot.append(0)
+    evalPlot.append(0)
     if not np.isscalar(old_fval):
         try:
             old_fval = old_fval.item()
@@ -2109,46 +3220,100 @@ def _minimize_sr1(fun, x0, args=(), jac=None, callback=None,
     old_old_fval = old_fval + np.linalg.norm(gfk) / 2
 
     xk = x0
+    vk = np.zeros_like(x0)
     if retall:
         allvecs = [x0]
     warnflag = 0
     gnorm = vecnorm(gfk, ord=norm)
+    import time
+    # start_time = time.time()
+    # timePlot.append(0)
+    theta_k = 1
+    #LS = []
+    TLR = []
+    #GEV = []
+    GC = []
+    MC = []
+    #tot_start_time = time.time()
+    tot_start_time = time.time()
     while (gnorm > gtol) and (k < maxiter):
-        errHistory.append(old_fval)
-        pk = -np.dot(Hk, gfk)
-        try:
-            alpha_k = 1
-            LHS = f(xk + pk)
-            old_old_fval = f(xk)
-            gfk_times_pk = np.dot(gfk.T, pk)
-            RHS = old_old_fval + 1e-3 * gfk_times_pk
-            for line1 in range(10):
-                if LHS < RHS * 0:
-                    old_fval = LHS
-                    break
-                alpha_k *= 0.5
-                LHS = f(xk + alpha_k * pk)
-                RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+        if etol != None and old_fval < etol : break
+        start_time = time.time()#time.time()
+        MC.append(time.time())
+        theta_kp1 = ((1e-5 - (theta_k * theta_k)) + np.sqrt(
+            ((1e-5 - (theta_k * theta_k)) * (1e-5 - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0.95)
+        theta_k = theta_kp1
+        MC[-1] = time.time() - MC[-1]
+        #mu = 0
+        xmuv = xk + mu * vk
 
-            """alpha_k, fc, gc, old_fval, old_old_fval, gfkp1 = \
-                     _line_search_wolfe12(f, myfprime, xk, pk, gfk,
-                                          old_fval, old_old_fval, amin=1e-100, amax=1e100)"""
-        except _LineSearchError:
-            # Line search failed to find a better solution.
-            warnflag = 2
-            break
+        GEV.append(time.time())
+        gfk = myfprime(xmuv)
+        GEV[-1] = time.time() - GEV[-1]
 
-        xkp1 = xk + alpha_k * pk
-        if retall:
-            allvecs.append(xkp1)
-        sk = xkp1 - xk
-        xk = xkp1
-        # if gfkp1 is None:
-        gfkp1 = myfprime(xkp1)
+        TLR.append(time.time())
+        pk = -gfk
+        a = []
+        idx = min(k, m)
+        for i in range(min(k, m)):
+            a.append(np.dot(sk_vec[idx - 1 - i].T, pk) / np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+            pk = pk - a[i] * yk_vec[idx - 1 - i]
+        if k > 0:
+            term = 0
+            for i in range(min(k, m)):
+                term = term + (np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]) / np.dot(yk_vec[idx - 1 - i].T,
+                                                                                           yk_vec[idx - 1 - i]))
+            pk = pk * term / idx
+        else:
+            pk = 1e-10 * pk
+        for i in reversed(range(min(k, m))):
+            b = np.dot(yk_vec[idx - 1 - i].T, pk) / np.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+            pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
 
+        pknorm = vecnorm(pk, ord=norm)
+        if pknorm > 1000:
+            delta = 1e-7
+        else:
+            delta = 1e-4
+        TLR[-1] = time.time() - TLR[-1]
+        LS.append(time.time())
+        LHS = f(xmuv + pk)
+        old_old_fval = f(xmuv)
+        gfk_times_pk = np.dot(gfk.T, pk)
+        RHS = old_old_fval + 1e-3 * gfk_times_pk
+        alpha_k = 1
+        LS[-1] = time.time() - LS[-1]
+        #numLS = 1
+        for line1 in range(10):
+            if LHS < RHS:
+                old_fval = LHS
+                break
+            #numLS += 1
+            LS.append(time.time())
+            alpha_k *= 0.5
+            LHS = f(xmuv + alpha_k * pk)
+            RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+            LS[-1] = time.time() - LS[-1]
+        #nLS.append(numLS)
+        sk = alpha_k * pk
+        #vkp1 = mu * vk + alpha_k * pk
+        vk = mu * vk + sk
+        #xkp1 = xk + vkp1
+        xk = xk + vk
+
+        # if retall:
+        #    allvecs.append(xkp1)
+        #sk = xkp1 - (xk + mu * vk)
+
+        #gfkp1 = myfprime(xkp1)
+        GEV.append(time.time())
+        gfkp1 = myfprime(xk)
+        GEV[-1] = time.time() - GEV[-1]
+
+        GC.append(time.time())
         yk = gfkp1 - gfk
-
-        # Global Convergence Term
+        # Global convergence
         p_times_q = np.dot(sk.T, yk)
         if gnorm > 1e-2:
             const = 2.0
@@ -2159,12 +3324,552 @@ def _minimize_sr1(fun, x0, args=(), jac=None, callback=None,
             zeta = const - (p_times_q / (p_times_p * gnorm))
         else:
             zeta = const
-        # yk = yk + zeta * gnorm * sk
-
+        yk = yk + zeta * gnorm * sk
+        GC[-1] = time.time() - GC[-1]
+        sk_vec.append(sk)
+        yk_vec.append(yk)
         gfk = gfkp1
+        #xk = xkp1
+        #vk = vkp1
+
+        # if callback is not None:
+        #    callback(xk)
+        k += 1
+        gnorm = vecnorm(gfk, ord=norm)
+        # if (gnorm <= gtol):
+        #    break
+
+        # if not np.isfinite(old_fval):
+        # We correctly found +-Inf as optimal value, or something went
+        # wrong.
+        #    warnflag = 2
+        #    break
+        end_time = time.time()
+
+        timePlot.append(end_time - start_time)
+        errPlot.append(old_fval)
+        evalPlot.append(sf.nfev + sf.ngev)
+    fval = old_fval
+    #tot_end_time = time.time()
+    tot_end_time = time.time()
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Algorithm: %s" % "lnaq")
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+        print("         Linesearch evaluations: %d" % len(LS))
+        print("         Total evaluations: %d" % (sf.ngev + sf.nfev))
+        print("         Avg Time per Iteration: %f" % np.mean(timePlot))
+        print("         Avg Time per FEV: %f" % np.mean(LS))
+        print("         Avg Time per GEV: %f" % np.mean(GEV))
+        print("         Avg Time per GC: %f" % np.mean(GC))
+        print("         Avg Time per TLR: %f" % np.mean(TLR))
+        print("         Avg Time per MC: %f" % np.mean(MC))
+        print("         Time Taken: %f" % (tot_end_time - tot_start_time))
+
+    nevs.append(fval)
+    nevs.append(k)
+    nevs.append(sf.nfev)
+    nevs.append(sf.ngev)
+    nevs.append(tot_end_time-tot_start_time)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
+def _minimize_trlmoq(fun, x0, args=(), jac=None, callback=None, errPlot=[], timePlot=[], m=10, evalPlot=[],  LS=[], GEV=[],nevs=None,
+                   gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, mu=0.8, sk_vec=None, yk_vec=None,
+                   disp=False, return_all=False, finite_diff_rel_step=None, etol=None,
+                   **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    old_fval = f(x0)
+    gfk = myfprime(x0)
+    timePlot.append(0)
+    evalPlot.append(0)
+    errPlot.append(old_fval)
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0
+    vk = np.zeros_like(x0)
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+    import time
+
+    # timePlot.append(0)
+    gfkm1 = gfk
+    theta_k = 1
+    #LS = []
+    TLR = []
+    #GEV = []
+    GC = []
+    MC = []
+    #tot_start_time = time.time()
+    tot_start_time = time.time()
+    while (gnorm > gtol) and (k < maxiter) :
+        if etol != None and old_fval < etol : break
+        start_time = time.time()
+        MC.append(time.time())
+        theta_kp1 = ((1e-5 - (theta_k * theta_k)) + np.sqrt(
+            ((1e-5 - (theta_k * theta_k)) * (1e-5 - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0.95)
+        theta_k = theta_kp1
+        MC[-1] = time.time() - MC[-1]
+        #mu = 0
+        # if k >0:
+        xmuv = xk + mu * vk
+        #ogfk = myfprime(xmuv)
+        agfk = (1 + mu) * gfk - mu * gfkm1
+        # else: agfk=gfk
+        TLR.append(time.time())
+        pk = -agfk
+        a = []
+        idx = min(k, m)
+        for i in range(min(k, m)):
+            a.append(np.dot(sk_vec[idx - 1 - i].T, pk) / np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+            pk = pk - a[i] * yk_vec[idx - 1 - i]
+        if k > 0:
+            term = 0
+            for i in range(min(k, m)):
+                term = term + (np.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]) / np.dot(yk_vec[idx - 1 - i].T,
+                                                                                           yk_vec[idx - 1 - i]))
+            pk = pk * term / idx
+        else:
+            pk = 1e-10 * pk
+        for i in reversed(range(min(k, m))):
+            b = np.dot(yk_vec[idx - 1 - i].T, pk) / np.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+            pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+
+        pknorm = vecnorm(pk, ord=norm)
+        if pknorm > 1000:
+            delta = 1e-7
+        else:
+            delta = 1e-4
+        TLR[-1] = time.time() - TLR[-1]
+
+        #gfkp1 = myfprime(xmuv)
+        LS.append(time.time())
+        LHS = f(xmuv + pk)
+        old_old_fval = f(xmuv)
+        agfk_times_pk = np.dot(agfk.T, pk)
+        RHS = old_old_fval + 1e-3 * agfk_times_pk
+        alpha_k = 1
+        LS[-1] = time.time() - LS[-1]
+        for line1 in range(10):
+            if LHS < RHS :
+                old_fval = LHS
+                break
+            LS.append(time.time())
+            alpha_k *= 0.5
+            LHS = f(xmuv + alpha_k * pk)
+            RHS = old_old_fval + 1e-3 * alpha_k * agfk_times_pk
+            LS[-1] = time.time()-LS[-1]
+        # vkp1 = mu * vk + alpha_k * pk
+        # xkp1 = xk + vkp1
+        sk = alpha_k * pk
+        vk = mu * vk + sk
+        xk = xk + vk
+
+        # if retall:
+        #    allvecs.append(xkp1)
+        # sk = xkp1 - (xk + mu * vk)
+        gfkm1 = gfk
+        # gfkp1 = myfprime(xkp1)
+        GEV.append(time.time())
+        gfk = myfprime(xk)
+        GEV[-1] = time.time() - GEV[-1]
+
+        GC.append(time.time())
+        yk = gfk - agfk
+        # yk = gfkp1 - agfk
+        # Global convergence
+        p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const
+        yk = yk + zeta * gnorm * sk
+        GC[-1] = time.time() - GC[-1]
+        sk_vec.append(sk)
+        yk_vec.append(yk)
+        # gfkm1 = gfk
+        # gfk = gfkp1
+        # xk = xkp1
+        # vk = vkp1
+
+        # if callback is not None:
+        #    callback(xk)
+        k += 1
+        gnorm = vecnorm(gfk, ord=norm)
+        # if (gnorm <= gtol):
+        #    break
+
+        # if not np.isfinite(old_fval):
+        # We correctly found +-Inf as optimal value, or something went
+        # wrong.
+        #    warnflag = 2
+        #    break
+
+        end_time = time.time()
+        timePlot.append(end_time - start_time)
+        errPlot.append(old_fval)
+        evalPlot.append(sf.nfev + sf.ngev)
+    fval = old_fval
+    #tot_end_time = time.time()
+    tot_end_time = time.time()
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Algorithm: %s" % "lmoq")
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+        print("         Linesearch evaluations: %d" % len(LS))
+        print("         Total evaluations: %d" % (sf.ngev + sf.nfev))
+        print("         Avg Time per Iteration: %f" % np.mean(timePlot))
+        print("         Avg Time per FEV: %f" % np.mean(LS))
+        print("         Avg Time per GEV: %f" % np.mean(GEV))
+        print("         Avg Time per GC: %f" % np.mean(GC))
+        print("         Avg Time per TLR: %f" % np.mean(TLR))
+        print("         Avg Time per MC: %f" % np.mean(MC))
+        print("         Time Taken: %f" % (tot_end_time - tot_start_time))
+
+    nevs.append(fval)
+    nevs.append(k)
+    nevs.append(sf.nfev)
+    nevs.append(sf.ngev)
+    nevs.append(tot_end_time-tot_start_time)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
+
+def _minimize_mosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=100,
+                  gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, errHistory=None,
+                  disp=False, return_all=False, finite_diff_rel_step=None,
+                  **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    import collections
+    s_vec = collections.deque(maxlen=10)
+    y_vec = collections.deque(maxlen=10)
+
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    old_fval = f(x0)
+    gfk = myfprime(x0).reshape(-1,1)
+    gfkm1 = gfk
+
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+    deltak = 1
+    eta = 1e-6
+    epsTR = 1e-10
+
+    # Sets the initial step guess to dx ~ 1
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0.reshape(-1,1)
+    vk = np.zeros_like(xk)
+    theta_k = 1
+    gamma = 1e-5
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+    count = 0
+    import time
+    timePlot.append(0)
+    while (gnorm > gtol) and (k < maxiter):
+        start_time = time.time()
+        k += 1
+
+        """if count > 1:
+            count = 0
+            theta_k = 1"""
+
+        theta_kp1 = ((gamma - (theta_k * theta_k)) + np.sqrt(
+            ((gamma - (theta_k * theta_k)) * (gamma - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        #mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0.8)
+        mu = (theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1)
+        # mu = 0.6#(theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1)
+        theta_k = theta_kp1
+
+        #print("k ", k, " fval ", old_fval, " mu ", mu)
+        errHistory.append(old_fval)
+
+        #gfk = myfprime(xk+mu*vk).reshape(-1, 1)
+        agfk = (1 + mu) * gfk - mu * gfkm1
+
+        if k==1:
+            #comment later
+            np.random.seed(seed)
+            Stemp = np.random.randn(N, 10)
+
+            for index in range(10):
+                y_vec.append(myfprime(Stemp[:,index]).reshape(-1,1))
+                s_vec.append(Stemp[:,index].reshape(-1,1))
+
+        S = np.squeeze(np.asarray(s_vec)).T
+        Y = np.squeeze(np.asarray(y_vec)).T
+
+        sk_TR = CG_Steinhaug_matFree(epsTR, agfk, deltak, S, Y, N)
+        #sk_TR =  -np.dot(Hk, gfk) * deltak
+
+        new_fval = f(xk+mu*vk+sk_TR)
+        ared = old_fval - new_fval  # Compute actual reduction
+
+        Lp = np.zeros((Y.shape[1], Y.shape[1]))
+        for ii in range(Y.shape[1]):
+            for jj in range(0, ii):
+                Lp[ii, jj] = S[:, ii].dot(Y[:, jj])
+        tmpp = np.sum((S * Y), axis=0)
+        Dp = np.diag(tmpp)
+        Mp = (Dp + Lp + Lp.T)
+        Minvp = np.linalg.inv(Mp)
+        tmpp1 = np.matmul(Y.T, sk_TR)
+        tmpp2 = np.matmul(Minvp, tmpp1)
+        Bk_skTR = np.matmul(Y, tmpp2)
+        #Bk_skTR = np.dot(Hk, sk_TR)
+        pred = -(agfk.T.dot(sk_TR) + 0.5 * sk_TR.T.dot(Bk_skTR))  # Compute predicted reduction
+
+        # Update trust region radius
+        if ared / pred > 0.75:
+            deltak = 2 * deltak
+        elif ared / pred >= 0.1 and ared / pred <= 0.75:
+            pass  # no need to change deltak
+        elif ared / pred < 0.1:
+            deltak = deltak * 0.5
+
+        # Take step
+        if ared / pred > eta:
+            #count = 0
+
+            xkp1 = xk +mu*vk + sk_TR
+            vkp1 = mu*vk + sk_TR
+            old_fval = f(xkp1)
+
+        else:
+            #count += 1
+            theta_k = 1
+            xkp1 = xk
+            vkp1 = vk
+            end_time = time.time()
+            timePlot.append(end_time - start_time)
+            continue
+
+
+
+        """
+        try:
+            alpha_k = 1
+            LHS = f(xk + pk)
+            old_old_fval = f(xk)
+            gfk_times_pk = np.dot(gfk.T, pk)
+            RHS = old_old_fval + 1e-3 * gfk_times_pk
+            for line1 in range(20):
+                if LHS < RHS :
+                    old_fval = LHS
+                    print("LineSearch satisfied")
+                    break
+
+                alpha_k /= 10
+                LHS = f(xk + alpha_k * pk)
+                RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+
+            '''alpha_k, fc, gc, old_fval, old_old_fval, gfkp1 = \
+                     _line_search_wolfe12(f, myfprime, xk, pk, gfk,
+                                          old_fval, old_old_fval, amin=1e-100, amax=1e100)'''
+        except _LineSearchError:
+            # Line search failed to find a better solution.
+            warnflag = 2
+            break
+        """
+
+        #xkp1 = xk + alpha_k * pk
+
+        if retall:
+            allvecs.append(xkp1)
+        sk = sk_TR#xkp1 - xk
+        xk = xkp1
+        vk = vkp1
+        # if gfkp1 is None:
+        gfkm1 = gfk
+        gfk = myfprime(xkp1).reshape(-1,1)
+
+        yk = gfk - agfk
+
+
+        # Global Convergence Term
+        """p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const"""
+        #yk = yk + zeta * gnorm * sk
+
+        #gfk = gfkp1
+
+        s_vec.append(sk)
+        y_vec.append(yk)
+
+
         if callback is not None:
             callback(xk)
-        k += 1
+
         gnorm = vecnorm(gfk, ord=norm)
         if (gnorm <= gtol):
             break
@@ -2174,6 +3879,9 @@ def _minimize_sr1(fun, x0, args=(), jac=None, callback=None,
             # wrong.
             warnflag = 2
             break
+        end_time = time.time()
+        timePlot.append(end_time-start_time)
+
 
         """rhok_inv = np.dot(yk, sk)
         # this was handled in numeric, let it remaines for more safety
@@ -2189,12 +3897,580 @@ def _minimize_sr1(fun, x0, args=(), jac=None, callback=None,
         Hk = np.dot(A1, np.dot(Hk, A2)) + (rhok * sk[:, np.newaxis] *
                                                  sk[np.newaxis, :])
         """
-        A1 = sk - np.dot(Hk, yk)
+
+        """A1 = sk - np.dot(Hk, yk)
         # if A1.all()!=0:
-        num = np.dot(A1, A1)
+        num = np.dot(A1, A1.T)
         den = np.dot(A1.T, yk)
         if den != 0:
-            Hk = Hk + num / den
+            Hk = Hk + num / den"""
+
+
+    fval = old_fval
+    errHistory.append(old_fval)
+
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
+
+
+def _minimize_sr1n(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=100,
+                  gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, errHistory=None,
+                  disp=False, return_all=False, finite_diff_rel_step=None,
+                  **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    import collections
+    s_vec = collections.deque(maxlen=10)
+    y_vec = collections.deque(maxlen=10)
+
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    old_fval = f(x0)
+    gfk = myfprime(x0).reshape(-1,1)
+
+
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+    deltak = 1
+    eta = 1e-6
+    epsTR = 1e-10
+
+    # Sets the initial step guess to dx ~ 1
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0.reshape(-1,1)
+    vk = np.zeros_like(xk)
+    theta_k = 1
+    gamma = 1e-5
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+    count = 0
+    import time
+    timePlot.append(0)
+
+    while (gnorm > gtol) and (k < maxiter):
+        start_time = time.time()
+        k += 1
+
+        """if count > 1:
+            count = 0
+            theta_k = 1"""
+
+        theta_kp1 = ((gamma - (theta_k * theta_k)) + np.sqrt(
+            ((gamma - (theta_k * theta_k)) * (gamma - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
+        #mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0.8)
+        mu = (theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1)
+        # mu = 0.6#(theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1)
+        theta_k = theta_kp1
+
+        #print("k ", k, " fval ", old_fval, " mu ", mu)
+        errHistory.append(old_fval)
+
+        gfk = myfprime(xk+mu*vk).reshape(-1, 1)
+
+        if k==1:
+            #comment later
+            np.random.seed(seed)
+            Stemp = np.random.randn(N, 10)
+
+            for index in range(10):
+                y_vec.append(myfprime(Stemp[:,index]).reshape(-1,1))
+                s_vec.append(Stemp[:,index].reshape(-1,1))
+
+        S = np.squeeze(np.asarray(s_vec)).T
+        Y = np.squeeze(np.asarray(y_vec)).T
+
+        sk_TR = CG_Steinhaug_matFree(epsTR, gfk, deltak, S, Y, N)
+        #sk_TR =  -np.dot(Hk, gfk) * deltak
+
+        new_fval = f(xk+mu*vk+sk_TR)
+        ared = old_fval - new_fval  # Compute actual reduction
+
+        Lp = np.zeros((Y.shape[1], Y.shape[1]))
+        for ii in range(Y.shape[1]):
+            for jj in range(0, ii):
+                Lp[ii, jj] = S[:, ii].dot(Y[:, jj])
+        tmpp = np.sum((S * Y), axis=0)
+        Dp = np.diag(tmpp)
+        Mp = (Dp + Lp + Lp.T)
+        Minvp = np.linalg.inv(Mp)
+        tmpp1 = np.matmul(Y.T, sk_TR)
+        tmpp2 = np.matmul(Minvp, tmpp1)
+        Bk_skTR = np.matmul(Y, tmpp2)
+        #Bk_skTR = np.dot(Hk, sk_TR)
+        pred = -(gfk.T.dot(sk_TR) + 0.5 * sk_TR.T.dot(Bk_skTR))  # Compute predicted reduction
+
+        # Update trust region radius
+        if ared / pred > 0.75:
+            deltak = 2 * deltak
+        elif ared / pred >= 0.1 and ared / pred <= 0.75:
+            pass  # no need to change deltak
+        elif ared / pred < 0.1:
+            deltak = deltak * 0.5
+
+        # Take step
+        if ared / pred > eta:
+            #count = 0
+            xkp1 = xk +mu*vk + sk_TR
+            vkp1 = mu*vk + sk_TR
+            old_fval = f(xkp1)
+
+        else:
+            #count += 1
+            theta_k = 1
+            xkp1 = xk
+            vkp1 = vk
+            end_time = time.time()
+            timePlot.append(end_time - start_time)
+            continue
+
+
+
+        """
+        try:
+            alpha_k = 1
+            LHS = f(xk + pk)
+            old_old_fval = f(xk)
+            gfk_times_pk = np.dot(gfk.T, pk)
+            RHS = old_old_fval + 1e-3 * gfk_times_pk
+            for line1 in range(20):
+                if LHS < RHS :
+                    old_fval = LHS
+                    print("LineSearch satisfied")
+                    break
+
+                alpha_k /= 10
+                LHS = f(xk + alpha_k * pk)
+                RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+
+            '''alpha_k, fc, gc, old_fval, old_old_fval, gfkp1 = \
+                     _line_search_wolfe12(f, myfprime, xk, pk, gfk,
+                                          old_fval, old_old_fval, amin=1e-100, amax=1e100)'''
+        except _LineSearchError:
+            # Line search failed to find a better solution.
+            warnflag = 2
+            break
+        """
+
+        #xkp1 = xk + alpha_k * pk
+
+        if retall:
+            allvecs.append(xkp1)
+        sk = sk_TR#xkp1 - xk
+        xk = xkp1
+        vk = vkp1
+        # if gfkp1 is None:
+        gfkp1 = myfprime(xkp1).reshape(-1,1)
+
+        yk = gfkp1 - gfk
+
+
+        # Global Convergence Term
+        """p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const"""
+        #yk = yk + zeta * gnorm * sk
+
+        gfk = gfkp1
+
+        s_vec.append(sk)
+        y_vec.append(yk)
+
+
+        if callback is not None:
+            callback(xk)
+
+        gnorm = vecnorm(gfk, ord=norm)
+        if (gnorm <= gtol):
+            break
+
+        if not np.isfinite(old_fval):
+            # We correctly found +-Inf as optimal value, or something went
+            # wrong.
+            warnflag = 2
+            break
+
+        end_time = time.time()
+        timePlot.append(end_time - start_time)
+
+        """rhok_inv = np.dot(yk, sk)
+        # this was handled in numeric, let it remaines for more safety
+        if rhok_inv == 0.:
+            rhok = 1000.0
+            if disp:
+                print("Divide-by-zero encountered: rhok assumed large")
+        else:
+            rhok = 1. / rhok_inv
+
+        A1 = I - sk[:, np.newaxis] * yk[np.newaxis, :] * rhok
+        A2 = I - yk[:, np.newaxis] * sk[np.newaxis, :] * rhok
+        Hk = np.dot(A1, np.dot(Hk, A2)) + (rhok * sk[:, np.newaxis] *
+                                                 sk[np.newaxis, :])
+        """
+
+        """A1 = sk - np.dot(Hk, yk)
+        # if A1.all()!=0:
+        num = np.dot(A1, A1.T)
+        den = np.dot(A1.T, yk)
+        if den != 0:
+            Hk = Hk + num / den"""
+
+
+    fval = old_fval
+    errHistory.append(old_fval)
+
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % sf.nfev)
+        print("         Gradient evaluations: %d" % sf.ngev)
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+                            njev=sf.ngev, status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
+
+
+
+def _minimize_sr1(fun, x0, args=(), jac=None, callback=None, timePlot=[],seed=100,
+                  gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, errHistory=None,
+                  disp=False, return_all=False, finite_diff_rel_step=None,
+                  **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac is None` the absolute step size used for numerical
+        approximation of the jacobian via forward differences.
+    return_all : bool, optional
+        Set to True to return a list of the best solution at each of the
+        iterations.
+    finite_diff_rel_step : None or array_like, optional
+        If `jac in ['2-point', '3-point', 'cs']` the relative step size to
+        use for numerical approximation of the jacobian. The absolute step
+        size is computed as ``h = rel_step * sign(x0) * max(1, abs(x0))``,
+        possibly adjusted to fit into the bounds. For ``method='3-point'``
+        the sign of `h` is ignored. If None (default) then step is selected
+        automatically.
+
+    """
+    _check_unknown_options(unknown_options)
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    if x0.ndim == 0:
+        x0.shape = (1,)
+    if maxiter is None:
+        maxiter = len(x0) * 200
+
+    import collections
+    s_vec = collections.deque(maxlen=10)
+    y_vec = collections.deque(maxlen=10)
+
+
+    sf = _prepare_scalar_function(fun, x0, jac, args=args, epsilon=eps,
+                                  finite_diff_rel_step=finite_diff_rel_step)
+
+    f = sf.fun
+    myfprime = sf.grad
+
+    old_fval = f(x0)
+    gfk = myfprime(x0).reshape(-1,1)
+
+
+    if not np.isscalar(old_fval):
+        try:
+            old_fval = old_fval.item()
+        except (ValueError, AttributeError) as e:
+            raise ValueError("The user-provided "
+                             "objective function must "
+                             "return a scalar value.") from e
+
+    k = 0
+    N = len(x0)
+    I = np.eye(N, dtype=int)
+    Hk = I
+    deltak = 1
+    eta = 1e-6
+    epsTR = 1e-10
+
+    # Sets the initial step guess to dx ~ 1
+    old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    xk = x0.reshape(-1,1)
+    if retall:
+        allvecs = [x0]
+    warnflag = 0
+    gnorm = vecnorm(gfk, ord=norm)
+    import time
+    timePlot.append(0)
+
+    while (gnorm > gtol) and (k < maxiter):
+        start_time = time.time()
+        k += 1
+        #print(old_fval)
+        errHistory.append(old_fval)
+
+
+        if k==1:
+            np.random.seed(seed)
+            Stemp = np.random.randn(N, 10)
+            for index in range(10):
+                y_vec.append(myfprime(Stemp[:,index]).reshape(-1,1))
+                s_vec.append(Stemp[:,index].reshape(-1,1))
+
+        S = np.squeeze(np.asarray(s_vec)).T
+        Y = np.squeeze(np.asarray(y_vec)).T
+
+        sk_TR = CG_Steinhaug_matFree(epsTR, gfk, deltak, S, Y, N)
+        #sk_TR =  -np.dot(Hk, gfk) * deltak
+
+        new_fval = f(xk+sk_TR)
+        ared = old_fval - new_fval  # Compute actual reduction
+
+
+
+        Lp = np.zeros((Y.shape[1], Y.shape[1]))
+        for ii in range(Y.shape[1]):
+            for jj in range(0, ii):
+                Lp[ii, jj] = S[:, ii].dot(Y[:, jj])
+        tmpp = np.sum((S * Y), axis=0)
+        Dp = np.diag(tmpp)
+        Mp = (Dp + Lp + Lp.T)
+        Minvp = np.linalg.inv(Mp)
+        tmpp1 = np.matmul(Y.T, sk_TR)
+        tmpp2 = np.matmul(Minvp, tmpp1)
+        Bk_skTR = np.matmul(Y, tmpp2)
+        #Bk_skTR = np.dot(Hk, sk_TR)
+        pred = -(gfk.T.dot(sk_TR) + 0.5 * sk_TR.T.dot(Bk_skTR))  # Compute predicted reduction
+
+        # Update trust region radius
+        if ared / pred > 0.75:
+            deltak = 2 * deltak
+        elif ared / pred >= 0.1 and ared / pred <= 0.75:
+            pass  # no need to change deltak
+        elif ared / pred < 0.1:
+            deltak = deltak * 0.5
+
+        # Take step
+        if ared / pred > eta:
+            xkp1 = xk + sk_TR
+            old_fval = f(xkp1)
+        else:
+            xkp1 = xk
+            end_time = time.time()
+            timePlot.append(end_time-start_time)
+            continue
+
+
+
+        """
+        try:
+            alpha_k = 1
+            LHS = f(xk + pk)
+            old_old_fval = f(xk)
+            gfk_times_pk = np.dot(gfk.T, pk)
+            RHS = old_old_fval + 1e-3 * gfk_times_pk
+            for line1 in range(20):
+                if LHS < RHS :
+                    old_fval = LHS
+                    print("LineSearch satisfied")
+                    break
+
+                alpha_k /= 10
+                LHS = f(xk + alpha_k * pk)
+                RHS = old_old_fval + 1e-3 * alpha_k * gfk_times_pk
+
+            '''alpha_k, fc, gc, old_fval, old_old_fval, gfkp1 = \
+                     _line_search_wolfe12(f, myfprime, xk, pk, gfk,
+                                          old_fval, old_old_fval, amin=1e-100, amax=1e100)'''
+        except _LineSearchError:
+            # Line search failed to find a better solution.
+            warnflag = 2
+            break
+        """
+
+        #xkp1 = xk + alpha_k * pk
+
+        if retall:
+            allvecs.append(xkp1)
+        sk = sk_TR#xkp1 - xk
+        xk = xkp1
+        # if gfkp1 is None:
+        gfkp1 = myfprime(xkp1).reshape(-1,1)
+
+        yk = gfkp1 - gfk
+
+
+        # Global Convergence Term
+        """p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const"""
+        #yk = yk + zeta * gnorm * sk
+
+        gfk = gfkp1
+
+        s_vec.append(sk)
+        y_vec.append(yk)
+
+
+        if callback is not None:
+            callback(xk)
+        
+        gnorm = vecnorm(gfk, ord=norm)
+        if (gnorm <= gtol):
+            break
+
+        if not np.isfinite(old_fval):
+            # We correctly found +-Inf as optimal value, or something went
+            # wrong.
+            warnflag = 2
+            break
+
+        end_time = time.time()
+        timePlot.append(end_time - start_time)
+
+        """rhok_inv = np.dot(yk, sk)
+        # this was handled in numeric, let it remaines for more safety
+        if rhok_inv == 0.:
+            rhok = 1000.0
+            if disp:
+                print("Divide-by-zero encountered: rhok assumed large")
+        else:
+            rhok = 1. / rhok_inv
+
+        A1 = I - sk[:, np.newaxis] * yk[np.newaxis, :] * rhok
+        A2 = I - yk[:, np.newaxis] * sk[np.newaxis, :] * rhok
+        Hk = np.dot(A1, np.dot(Hk, A2)) + (rhok * sk[:, np.newaxis] *
+                                                 sk[np.newaxis, :])
+        """
+
+        """A1 = sk - np.dot(Hk, yk)
+        # if A1.all()!=0:
+        num = np.dot(A1, A1.T)
+        den = np.dot(A1.T, yk)
+        if den != 0:
+            Hk = Hk + num / den"""
+
 
     fval = old_fval
     errHistory.append(old_fval)
@@ -4435,11 +6711,17 @@ def show_options(solver=None, method=None, disp=True):
             ('bfgs', 'scipy.optimize.optimize._minimize_bfgs'),
             ('olmoq', 'scipy.optimize.optimize._minimize_olmoq'),
             ('olnaq', 'scipy.optimize.optimize._minimize_olnaq'),
-            ('olbfgs', 'scipy.optimize.optimize._minimize_olbfgs'),
+            ('olbfgs', 'scipy.optimize.optimize._minimize_olbfgs'),            
+            ('lmoq', 'scipy.optimize.optimize._minimize_lmoq'),
+            ('lnaq', 'scipy.optimize.optimize._minimize_lnaq'),
+            ('lbfgs', 'scipy.optimize.optimize._minimize_lbfgs'),
             ('omoq', 'scipy.optimize.optimize._minimize_omoq'),
             ('onaq', 'scipy.optimize.optimize._minimize_onaq'),
             ('obfgs', 'scipy.optimize.optimize._minimize_obfgs'),
+            ('lsr1', 'scipy.optimize.optimize._minimize_lsr1'),
             ('sr1', 'scipy.optimize.optimize._minimize_sr1'),
+            ('sr1n', 'scipy.optimize.optimize._minimize_sr1n'),
+            ('mosr1', 'scipy.optimize.optimize._minimize_mosr1'),
             ('cg', 'scipy.optimize.optimize._minimize_cg'),
             ('cobyla', 'scipy.optimize.cobyla._minimize_cobyla'),
             ('dogleg', 'scipy.optimize._trustregion_dogleg._minimize_dogleg'),

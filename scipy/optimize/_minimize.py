@@ -18,8 +18,9 @@ import numpy as np
 # unconstrained minimization
 from .optimize import (_minimize_neldermead, _minimize_powell, _minimize_cg,
                        _minimize_bfgs,_minimize_olmoq,_minimize_olnaq,_minimize_olbfgs,
+                        _minimize_lmoq,_minimize_lnaq,_minimize_lbfgs,
                         _minimize_omoq,_minimize_onaq,_minimize_obfgs,
-                       _minimize_sr1, _minimize_newtoncg,
+                       _minimize_sr1,_minimize_sr1n,_minimize_mosr1, _minimize_newtoncg,
                        _minimize_scalar_brent, _minimize_scalar_bounded,
                        _minimize_scalar_golden, MemoizeJac)
 from ._trustregion_dogleg import _minimize_dogleg
@@ -624,14 +625,26 @@ def minimize(fun, x0, args=(), method=None, jac=None, hess=None,
         return _minimize_olnaq(fun, x0, args, jac, callback, **options)
     elif meth == 'olbfgs':
         return _minimize_olbfgs(fun, x0, args, jac, callback, **options)
+    elif meth == 'lmoq':
+        return _minimize_lmoq(fun, x0, args, jac, callback, **options)
+    elif meth == 'lnaq':
+        return _minimize_lnaq(fun, x0, args, jac, callback, **options)
+    elif meth == 'lbfgs':
+        return _minimize_lbfgs(fun, x0, args, jac, callback, **options)
     elif meth == 'omoq':
         return _minimize_omoq(fun, x0, args, jac, callback, **options)
     elif meth == 'onaq':
         return _minimize_onaq(fun, x0, args, jac, callback, **options)
     elif meth == 'obfgs':
         return _minimize_obfgs(fun, x0, args, jac, callback, **options)
+    elif meth == 'lsr1':
+        return _minimize_lsr1(fun, x0, args, jac, callback, **options)
     elif meth == 'sr1':
         return _minimize_sr1(fun, x0, args, jac, callback, **options)
+    elif meth == 'sr1n':
+        return _minimize_sr1n(fun, x0, args, jac, callback, **options)
+    elif meth == 'mosr1':
+        return _minimize_mosr1(fun, x0, args, jac, callback, **options)
     elif meth == 'newton-cg':
         return _minimize_newtoncg(fun, x0, args, jac, hess, hessp, callback,
                                   **options)
