@@ -4024,7 +4024,7 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
     if k == 0:
         print("Parameters: ", len(xk))
         mu = 0
-        grad_val = myfprime(xk + mu * vk)
+        grad_val = myfprime(xk + mu * vk).reshape(-1,1)
         gfk_vec.append(grad_val)
         gfk_vec.append(grad_val)
 
