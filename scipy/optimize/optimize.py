@@ -4009,6 +4009,8 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
     #old_old_fval = old_fval + np.linalg.norm(gfk) / 2
 
     xk = x0.reshape(-1,1)
+
+
     vk = vk_vec[0]
     #vk = np.zeros_like(xk)
     theta_k = theta[0]
@@ -4027,7 +4029,9 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
         grad_val = myfprime(xk + mu * vk).reshape(-1,1)
         gfk_vec.append(grad_val)
         gfk_vec.append(grad_val)
-
+        old_fval = f(xk)
+    else:
+        old_fval = errHistory[-1]
     theta_kp1 = ((gamma - (theta_k * theta_k)) + np.sqrt(
         ((gamma - (theta_k * theta_k)) * (gamma - (theta_k * theta_k))) + 4 * theta_k * theta_k)) / 2
     #mu = np.minimum((theta_k * (1 - theta_k)) / (theta_k * theta_k + theta_kp1), 0.8)
@@ -4124,9 +4128,9 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
     if callback is not None:
         callback(xk)
 
-    gnorm = vecnorm(gfk, ord=norm)
+    """gnorm = vecnorm(gfk, ord=norm)
     if (gnorm <= gtol):
-        res.append('CONV')
+        res.append('CONV')"""
 
     if not np.isfinite(old_fval):
         # We correctly found +-Inf as optimal value, or something went
@@ -4135,7 +4139,7 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
         res.append('INF')
 
     end_time = time.time()
-    timePlot.append(end_time-start_time)
+#    timePlot.append(end_time-start_time)
 
 
 
