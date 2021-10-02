@@ -17,7 +17,7 @@ import numpy as np
 
 # unconstrained minimization
 from .optimize import (_minimize_neldermead, _minimize_powell, _minimize_cg,
-                       _minimize_bfgs,_minimize_olmoq,_minimize_olnaq,_minimize_olbfgs,
+                       _minimize_bfgs,_minimize_olmoq,_minimize_omosr1,_minimize_olnaq,_minimize_olbfgs,
                         _minimize_lmoq,_minimize_lnaq,_minimize_lbfgs,
                         _minimize_omoq,_minimize_onaq,_minimize_obfgs,
                        _minimize_sr1,_minimize_sr1n,_minimize_mosr1, _minimize_newtoncg,
@@ -643,6 +643,8 @@ def minimize(fun, x0, args=(), method=None, jac=None, hess=None,
         return _minimize_sr1(fun, x0, args, jac, callback, **options)
     elif meth == 'sr1n':
         return _minimize_sr1n(fun, x0, args, jac, callback, **options)
+    elif meth == 'omosr1':
+        return _minimize_omosr1(fun, x0, args, jac, callback, **options)
     elif meth == 'mosr1':
         return _minimize_mosr1(fun, x0, args, jac, callback, **options)
     elif meth == 'newton-cg':
