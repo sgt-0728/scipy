@@ -4022,7 +4022,7 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
     #gnorm = vecnorm(gfk, ord=norm)
 
     import time
-    start = time.time()
+    start_time = time.time()
     if k == 0:
         print("Parameters: ", len(xk))
         mu = 0
@@ -4139,7 +4139,7 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
         res.append('INF')
 
     end_time = time.time()
-#    timePlot.append(end_time-start_time)
+    timePlot.append(end_time-start_time)
 
 
 
@@ -4161,11 +4161,16 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
     elif k >= maxiter:
         warnflag = 1
         msg = _status_message['maxiter']
-    elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
-        warnflag = 3
-        msg = _status_message['nan']
     else:
         msg = _status_message['success']
+    """elif np.isnan(gnorm) or np.isnan(fval) or np.isnan(xk).any():
+        warnflag = 3
+        msg = _status_message['nan']
+    
+    else:
+        msg = _status_message['success']
+    
+    """
 
     if disp:
         print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
@@ -4174,7 +4179,7 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
         print("         Function evaluations: %d" % sf.nfev)
         print("         Gradient evaluations: %d" % sf.ngev)
 
-    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=sf.nfev,
+    result = OptimizeResult(fun=fval, jac=None, hess_inv=Hk, nfev=sf.nfev,
                             njev=sf.ngev, status=warnflag,
                             success=(warnflag == 0), message=msg, x=xk,
                             nit=k)
