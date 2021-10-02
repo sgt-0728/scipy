@@ -4049,9 +4049,9 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
     if k==0:
         #comment later
         np.random.seed(seed)
-        Stemp = np.random.randn(N, 10)
+        Stemp = np.random.randn(N, m)
 
-        for index in range(10):
+        for index in range(m):
             y_vec.append(myfprime(Stemp[:,index]).reshape(-1,1))
             s_vec.append(Stemp[:,index].reshape(-1,1))
 
@@ -4097,7 +4097,7 @@ def _minimize_omosr1(fun, x0, args=(), jac=None, callback=None,timePlot=[],seed=
         gfkp1 = myfprime(xkp1).reshape(-1, 1)
 
         gfk_vec.append(gfkp1)
-        yk = gfkp1 - agfk
+        yk = gfkp1 - agfk +sk_TR
 
         delta.append(deltak)
         theta.append(theta_k)
