@@ -1441,7 +1441,193 @@ def _minimize_bfgs(fun, x0, args=(), jac=None, callback=None,
         result['allvecs'] = allvecs
     return result
 
+def _minimize_naq(fun, x0, args=(), jac=None, callback=None,mu=0.95,
+                   gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None,
+                   disp=False, return_all=False,
+                   **unknown_options):
+    """
+    Minimization of scalar function of one or more variables using the
+    BFGS algorithm.
+    Options
+    -------
+    disp : bool
+        Set to True to print convergence messages.
+    maxiter : int
+        Maximum number of iterations to perform.
+    gtol : float
+        Gradient norm must be less than `gtol` before successful
+        termination.
+    norm : float
+        Order of norm (Inf is max, -Inf is min).
+    eps : float or ndarray
+        If `jac` is approximated, use this value for the step size.
+    """
+    _check_unknown_options(unknown_options)
+    f = fun
+    fprime = jac
+    epsilon = eps
+    retall = return_all
 
+    x0 = asarray(x0).flatten()
+    xk = x0
+
+    if xk.ndim == 0:
+        xk.shape = (1,)
+    if maxiter is None:
+        maxiter = len(xk) * 200
+    func_calls, f = wrap_function(f, args)
+    if fprime is None:
+        grad_calls, myfprime = wrap_function(approx_fprime, (f, epsilon))
+    else:
+        grad_calls, myfprime = wrap_function(fprime, args)
+
+    # gfk = myfprime(xk)
+    k = 0
+    N = len(xk)
+    I = numpy.eye(N, dtype=int)
+    Hk = I
+    err_plot = []
+    vk = numpy.zeros(N)
+    #mu = 0.01
+    sigma = 0.02
+    xk = xk + mu * vk
+    # Sets the initial step guess to dx ~ 1
+
+    # old_fval = f(xk)
+    # old_old_fval = old_fval + np.linalg.norm(gfk) / 2
+
+    if retall:
+        allvecs = [xk]
+    warnflag = 0
+    # gnorm = vecnorm(gfk, ord=norm)
+    gnorm = 1
+    xk = x0
+    flag_err = 1
+    while (gnorm > gtol) and (k < maxiter):
+        wmuv = xk + mu * vk
+        gfk = myfprime(wmuv)
+        gnorm = vecnorm(gfk, ord=norm)
+
+        flag_err = 0
+        pk = -numpy.dot(Hk, gfk)
+
+        pknorm = vecnorm(pk, ord=norm)
+        if pknorm > 1000:
+            delta = 1e-7
+        else:
+            delta = 1e-4
+
+        try:
+            LHS = f(wmuv + pk)
+            RHS = f(wmuv) + 1e-3 * numpy.dot(gfk.T, pk)
+            if LHS <= RHS:
+                lamda_k = 1
+            else: 
+                #first iter
+                if k == 0:
+                    L = 100
+                    old_old_fval = LHS + np.linalg.norm(gfk) / 2
+                    lamda_k, fc, gc, old_fval, old_old_fval, gfkp1 = \
+                        _line_search_wolfe12(f, myfprime, wmuv, pk, gfk,
+                                             LHS, old_old_fval, amin=1e-100, amax=1e100)
+                    
+                else:
+                    L = 100*(vecnorm(yk, ord=norm) / vecnorm(sk, ord=norm))
+                    Qk = L * numpy.eye(N)
+                    pkQ = numpy.sqrt(numpy.dot(pk.T, numpy.dot(Qk, pk)))
+                    lamda_k = -(delta* numpy.dot(gfk.T, pk)) / numpy.square(pkQ)
+
+        except _LineSearchError:
+            # Line search failed to find a better solution.
+            warnflag = 2
+            break
+
+        vkp1 = mu * vk + lamda_k * pk
+        xkp1 = xk + vkp1
+        if k % 2000 == 0:
+            err = f(xkp1)
+            print("error:", err, "\tepoch:", k, "\talpha:", lamda_k, "\tgnorm:", gnorm)
+
+        if retall:
+            allvecs.append(xkp1)
+        sk = xkp1 - wmuv
+        xk = xkp1
+        vk = vkp1
+        gfkp1 = myfprime(xkp1) 
+        yk = gfkp1 - gfk
+        gfk = gfkp1
+        if callback is not None:
+            callback(xk)
+
+        #gnorm = vecnorm(gfk, ord=norm)
+        p_times_q = np.dot(sk.T, yk)
+        if gnorm > 1e-2:
+            const = 2.0
+        else:
+            const = 100.0
+        if p_times_q < 0:
+            p_times_p = np.dot(sk.T, sk)
+            zeta = const - (p_times_q / (p_times_p * gnorm))
+        else:
+            zeta = const
+        yk = yk + zeta * gnorm * sk #with global convergence term
+
+        if (gnorm <= gtol):
+            break
+
+        # if not numpy.isfinite(old_fval):
+        # We correctly found +-Inf as optimal value, or something went
+        # wrong.
+        #    warnflag = 2
+        #    break
+
+        try:  # this was handled in numeric, let it remaines for more safety
+            rhok = 1.0 / (numpy.dot(yk.T, sk))
+        except ZeroDivisionError:
+            rhok = 1000.0
+            if disp:
+                print("Divide-by-zero encountered: rhok assumed large")
+        if isinf(rhok):  # this is patch for numpy
+            rhok = 1000.0
+            if disp:
+                print("Divide-by-zero encountered: rhok assumed large")
+        if k == 0:
+            Hk = numpy.eye(N) * (p_times_q / numpy.dot(yk.T, yk))
+        else:
+            A1 = I - sk[:, numpy.newaxis] * yk[numpy.newaxis, :] * rhok
+            A2 = I - yk[:, numpy.newaxis] * sk[numpy.newaxis, :] * rhok
+            Hk = numpy.dot(A1, numpy.dot(Hk, A2)) + (rhok * sk[:, numpy.newaxis] *
+                                                     sk[numpy.newaxis, :])
+        k += 1
+    fval = f(xkp1)
+    #fval = old_fval
+    if np.isnan(fval):
+        # This can happen if the first call to f returned NaN;
+        # the loop is then never entered.
+        warnflag = 2
+
+    if warnflag == 2:
+        msg = _status_message['pr_loss']
+    elif k >= maxiter:
+        warnflag = 1
+        msg = _status_message['maxiter']
+    else:
+        msg = _status_message['success']
+
+    if disp:
+        print("%s%s" % ("Warning: " if warnflag != 0 else "", msg))
+        print("         Current function value: %f" % fval)
+        print("         Iterations: %d" % k)
+        print("         Function evaluations: %d" % func_calls[0])
+        print("         Gradient evaluations: %d" % grad_calls[0])
+
+    result = OptimizeResult(fun=fval, jac=gfk, hess_inv=Hk, nfev=func_calls[0],
+                            njev=grad_calls[0], status=warnflag,
+                            success=(warnflag == 0), message=msg, x=xk,
+                            nit=k)
+    if retall:
+        result['allvecs'] = allvecs
+    return result
 
 def _minimize_obfgs(fun, x0, args=(), jac=None, callback=None,
                      gtol=1e-5, norm=Inf, eps=_epsilon, maxiter=None, err=[], timeplot=[],
@@ -2774,6 +2960,492 @@ def _minimize_olmoq(fun, x0, args=(), jac=None, callback=None,
 
     return result
 
+
+#######################################################################################################################
+
+
+def _minimize_adaQN(fun, x0, args=(), jac=None, callback=None,
+                    gtol=1e-5, norm=Inf, eps=1e-4, maxiter=None,
+                    disp=False, return_all=False, wo_bar_vec=None, ws_vec=None, gamma=1.01, clearF=True,
+                    iter=None, alpha_k=0.01, sk_vec=None, yk_vec=None, F=None, t_vec=None, L=5, memF=None, memL=None,
+                    timeLapse=[],
+                    **unknown_options):
+    """
+    Bk = minibatch
+    |Bk| = b batch size
+    L = 5 memory size chosen from (2,5,10,20)
+    alpha = ?
+    k = iteration count
+    mL = 10
+    mF = 100
+    eps =1e-4
+    gamma = 1.01
+    """
+    _check_unknown_options(unknown_options)
+    f = fun
+    fprime = jac
+    epsilon = eps
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    wk = x0.reshape(-1, 1)
+
+    t = t_vec[0]
+    k = iter[0]
+    # eps = 1e-4
+    # gamma = 1.01
+    N = len(wk)
+
+    if k == 0:
+        wo_bar = np.zeros_like(wk)
+        ws = np.zeros_like(wk)
+    else:
+        wo_bar = wo_bar_vec[0]  # np.zeros_like(wk)
+        ws = ws_vec[0]  # 0
+
+    func_calls, f = wrap_function(f, args)
+    if fprime is None:
+        grad_calls, myfprime = wrap_function(approx_fprime, (f, epsilon))
+    else:
+        grad_calls, myfprime = wrap_function(fprime, args)
+
+    gfk = myfprime(wk).reshape(-1, 1)
+
+    F.append(gfk)
+
+    # two loop recursion
+
+    q = gfk
+    tau = len(sk_vec)
+    a = np.zeros(tau)
+    for i in reversed(range(tau)):
+        rho = 1 / numpy.dot(yk_vec[i].T, sk_vec[i])
+        a[i] = rho * np.dot(sk_vec[i].T, q)
+        q = q - np.dot(a[i], yk_vec[i])
+    term = np.sum(np.square(F), 0)
+    Hk0 = 1 / np.sqrt(term + eps)
+    r = Hk0 * q
+    for i in range(tau):
+        rho = 1 / numpy.dot(yk_vec[i].T, sk_vec[i])
+        beta = rho * np.dot(yk_vec[i].T, r)
+        r = r + sk_vec[i] * (a[i] - beta)
+    pk = r
+    """
+    pk = -gfk
+    a = []
+    idx = len(sk_vec)
+    for i in range(len(sk_vec)):
+        a.append(numpy.dot(sk_vec[idx - 1 - i].T, pk) / numpy.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+        pk = pk - a[i] * yk_vec[idx - 1 - i]
+    term = np.sum(np.square(F), 0)
+    Hk0 = 1 / np.sqrt(term + eps)
+    pk = Hk0 * pk
+    for i in reversed(range(len(sk_vec))):
+        b = numpy.dot(yk_vec[idx - 1 - i].T, pk) / numpy.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+        pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+    """
+
+    flag_ret = 1
+
+    wk = wk - alpha_k[0] * pk
+
+    ws = ws + wk
+
+    if k % L == 0:
+        wn_bar = ws / L
+        ws = np.zeros_like(wk)
+        if t > 0:
+            if f(wn_bar) > gamma * f(wo_bar):
+                sk_vec.clear()
+                yk_vec.clear()
+                if clearF: F.clear()
+                #print("Clearing buffers")
+                wk = wo_bar
+                flag_ret = 0
+            if flag_ret:
+                sk = wn_bar - wo_bar
+                fisher = np.asarray(F)[:, :, 0].T
+                yk = np.dot(fisher, np.dot(fisher.T, sk))
+                # yk = (np.sum(fisher, 1, keepdims=True) * sk) / shape(fisher)[-1]
+                # yk = 0
+                # for i in F:
+                #    yk += np.dot(i,np.dot(i.T,sk))
+                # yk = yk/len(F)
+                if np.dot(sk.T, yk) > eps * np.dot(yk.T, yk):
+                    sk_vec.append(sk)
+                    yk_vec.append(yk)
+                    wo_bar = wn_bar
+
+        else:
+            wo_bar = wn_bar
+
+        t += 1
+        t_vec.append(t)
+
+    if callback is not None:
+        callback(wk)
+    k += 1
+
+    iter.append(k)
+    wo_bar_vec.append(wo_bar)  # np.zeros_like(wk)
+    ws_vec.append(ws)  # 0
+    memL.append(len(sk_vec))
+    memF.append(len(F))
+
+    result = OptimizeResult(fun=0, jac=0, hess_inv=0, nfev=0,
+                            njev=0, status=0,
+                            success=(0), message=0, x=wk,
+                            nit=k)
+
+    return result
+    
+def _minimize_aSNAQ(fun, x0, args=(), jac=None, callback=None,
+                     gtol=1e-5, norm=Inf, eps=1e-4, maxiter=None,
+                     disp=False, return_all=False, wo_bar_vec=None, ws_vec=None, vo_bar_vec=None, vs_vec=None,
+                     vk_vec=None, L=5,err=None,
+                     mu_val=None, mu_fac=1.01, mu_init=0.1, mu_clip=0.99, clearF=True, reset=False, dirNorm=True,
+                     iter=None, alpha_k=1.0, sk_vec=None, yk_vec=None, F=None, t_vec=None, gamma=1.01, old_fun_val=None,
+                     memF=None, memL=None, timeLapse=[],
+                     **unknown_options):
+    """
+    Bk = minibatch
+    |Bk| = b batch size
+    L = 5 memory size chosen from (2,5,10,20)
+    alpha = ?
+    k = iteration count
+    mL = 10
+    mF = 100
+    eps =1e-4
+    gamma = 1.01
+    """
+    _check_unknown_options(unknown_options)
+    f = fun
+    fprime = jac
+    epsilon = eps
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    wk = x0.reshape(-1, 1)
+
+    t = t_vec[0]
+    k = iter[0]
+    # eps = 1e-4
+    # gamma = 1.01
+    N = len(wk)
+
+    if k == 0:
+        wo_bar = np.zeros_like(wk)
+        vo_bar = np.zeros_like(wk)
+        ws = np.zeros_like(wk)
+        vs = np.zeros_like(wk)
+        vk = np.zeros_like(wk)
+        mu = mu_val[0]
+
+    else:
+        wo_bar = wo_bar_vec[0]  # np.zeros_like(wk)
+        vo_bar = vo_bar_vec[0]  # np.zeros_like(wk)
+        ws = ws_vec[0]  # 0
+        vs = vs_vec[0]  # 0
+        mu = mu_val[0]  # 0
+        vk = vk_vec[0]  # 0
+
+    func_calls, f = wrap_function(f, args)
+    if fprime is None:
+        grad_calls, myfprime = wrap_function(approx_fprime, (f, epsilon))
+    else:
+        grad_calls, myfprime = wrap_function(fprime, args)
+
+    gfk = myfprime(wk + mu * vk).reshape(-1, 1)
+
+    if k == 0: F.append(gfk)
+    # two loop recursion
+
+    q = gfk
+    tau = len(sk_vec)
+    a = np.zeros(tau)
+    for i in reversed(range(tau)):
+        rho = 1 / numpy.dot(yk_vec[i].T, sk_vec[i])
+        a[i] = rho * np.dot(sk_vec[i].T, q)
+        q = q - np.dot(a[i], yk_vec[i])
+    term = np.sum(np.square(F), 0)
+    Hk0 = 1 / np.sqrt(term + eps)
+    r = Hk0 * q
+    for i in range(tau):
+        rho = 1 / numpy.dot(yk_vec[i].T, sk_vec[i])
+        beta = rho * np.dot(yk_vec[i].T, r)
+        r = r + sk_vec[i] * (a[i] - beta)
+    pk = r
+    if vecnorm(pk, 2) == np.inf or vecnorm(pk, 2) == np.nan:
+        pk = np.ones_like(wk)
+
+    elif dirNorm:
+        pk = pk / vecnorm(pk, 2)  # Exploding gradients (direction normalization)
+
+    if k == 0: F.clear()
+    '''
+    pk = -gfk
+    a = []
+    idx = len(sk_vec)
+    for i in range(len(sk_vec)):
+        a.append(numpy.dot(sk_vec[idx - 1 - i].T, pk) / numpy.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+        pk = pk - a[i] * yk_vec[idx - 1 - i]
+    term = np.sum(np.square(F), 0)
+    Hk0 = 1 / np.sqrt(term + eps)
+    pk = Hk0 * pk
+    for i in reversed(range(len(sk_vec))):
+        b = numpy.dot(yk_vec[idx - 1 - i].T, pk) / numpy.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+        pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+    '''
+
+    flag_ret = 1
+
+    vk = mu * vk - alpha_k[0] * pk
+    wk = wk + vk
+
+    ws = ws + wk  # +mu*vk
+    vs = vs + vk
+
+    gfkp1 = myfprime(wk).reshape(-1, 1)
+    F.append(gfkp1)
+
+    if k % L == 0:
+        wn_bar = ws / L
+        vn_bar = vs / L
+        ws = np.zeros_like(wk)
+        vs = np.zeros_like(wk)
+        if t > 0:
+            if f(wn_bar) > gamma * f(wo_bar):
+                sk_vec.clear()
+                yk_vec.clear()
+                mu = np.minimum(mu / mu_fac, mu_clip)
+                mu = np.maximum(mu, mu_init)
+                if clearF: F.clear()
+                #print("Clearing buffers")
+                wk = wo_bar
+                vk = vo_bar
+                flag_ret = 0
+            if flag_ret:
+                sk = wn_bar - wo_bar
+                fisher = np.asarray(F)[:, :, 0].T
+                yk = np.dot(fisher, np.dot(fisher.T, sk))
+                mu = np.minimum(mu * mu_fac, mu_clip)
+                # yk = (np.sum(fisher, 1, keepdims=True) * sk) / shape(fisher)[-1]
+                # yk = 0
+                # for i in F:
+                #    yk += np.dot(i,np.dot(i.T,sk))
+                # yk = yk/len(F)
+                if np.dot(sk.T, yk) > eps * np.dot(yk.T, yk):
+                    sk_vec.append(sk)
+                    yk_vec.append(yk)
+                    wo_bar = wn_bar
+                    vo_bar = vn_bar
+        else:
+            wo_bar = wn_bar
+            vo_bar = vn_bar
+        t += 1
+        t_vec.append(t)
+
+    if callback is not None:
+        callback(wk)
+    k += 1
+    iter.append(k)
+    mu_val.append(mu)
+    wo_bar_vec.append(wo_bar)  # np.zeros_like(wk)
+    vo_bar_vec.append(vo_bar)  # np.zeros_like(wk)
+    ws_vec.append(ws)  # 0
+    vs_vec.append(vs)  # 0
+    vk_vec.append(vk)  # 0
+    memL.append(len(sk_vec))
+    memF.append(len(F))
+    err.append(f(wk))
+
+    result = OptimizeResult(fun=0, jac=0, hess_inv=0, nfev=0,
+                            njev=0, status=0,
+                            success=(0), message=0, x=wk,
+                            nit=k)
+
+    return result
+
+def _minimize_aSMoQ(fun, x0, args=(), jac=None, callback=None,
+                     gtol=1e-5, norm=Inf, eps=1e-4, maxiter=None,
+                     disp=False, return_all=False, wo_bar_vec=None, ws_vec=None, vo_bar_vec=None, vs_vec=None,
+                     vk_vec=None, L=5,err=None,
+                     mu_val=None, mu_fac=1.01, mu_init=0.1, mu_clip=0.99, clearF=True, reset=False, dirNorm=True,
+                     iter=None, alpha_k=1.0, gfk_vec=None, sk_vec=None, yk_vec=None, F=None, t_vec=None, gamma=1.01, old_fun_val=None,
+                     memF=None, memL=None, timeLapse=[],
+                     **unknown_options):
+    """
+    Bk = minibatch
+    |Bk| = b batch size
+    L = 5 memory size chosen from (2,5,10,20)
+    alpha = ?
+    k = iteration count
+    mL = 10
+    mF = 100
+    eps =1e-4
+    gamma = 1.01
+    """
+    _check_unknown_options(unknown_options)
+    f = fun
+    fprime = jac
+    epsilon = eps
+    retall = return_all
+
+    x0 = asarray(x0).flatten()
+    wk = x0.reshape(-1, 1)
+
+    t = t_vec[0]
+    k = iter[0]
+    # eps = 1e-4
+    # gamma = 1.01
+    N = len(wk)
+
+    if k == 0:
+        wo_bar = np.zeros_like(wk)
+        vo_bar = np.zeros_like(wk)
+        ws = np.zeros_like(wk)
+        vs = np.zeros_like(wk)
+        vk = np.zeros_like(wk)
+        mu = mu_val[0]
+        
+        print("Parameters: ", len(xk))
+        grad_val = myfprime(xk + mu * vk).reshape(-1, 1)
+        gfk_vec.append(grad_val)
+        gfk_vec.append(grad_val)
+
+    
+
+    else:
+        wo_bar = wo_bar_vec[0]  # np.zeros_like(wk)
+        vo_bar = vo_bar_vec[0]  # np.zeros_like(wk)
+        ws = ws_vec[0]  # 0
+        vs = vs_vec[0]  # 0
+        mu = mu_val[0]  # 0
+        vk = vk_vec[0]  # 0
+
+    func_calls, f = wrap_function(f, args)
+    if fprime is None:
+        grad_calls, myfprime = wrap_function(approx_fprime, (f, epsilon))
+    else:
+        grad_calls, myfprime = wrap_function(fprime, args)
+
+    #gfk = myfprime(wk + mu * vk).reshape(-1, 1)
+    # curr_grad = myfprime(xk)
+    gfk = (1 + mu) * gfk_vec[1] - mu * gfk_vec[0]
+
+    if k == 0: F.append(gfk)
+    # two loop recursion
+
+    q = gfk
+    tau = len(sk_vec)
+    a = np.zeros(tau)
+    for i in reversed(range(tau)):
+        rho = 1 / numpy.dot(yk_vec[i].T, sk_vec[i])
+        a[i] = rho * np.dot(sk_vec[i].T, q)
+        q = q - np.dot(a[i], yk_vec[i])
+    term = np.sum(np.square(F), 0)
+    Hk0 = 1 / np.sqrt(term + eps)
+    r = Hk0 * q
+    for i in range(tau):
+        rho = 1 / numpy.dot(yk_vec[i].T, sk_vec[i])
+        beta = rho * np.dot(yk_vec[i].T, r)
+        r = r + sk_vec[i] * (a[i] - beta)
+    pk = r
+    if vecnorm(pk, 2) == np.inf or vecnorm(pk, 2) == np.nan:
+        pk = np.ones_like(wk)
+
+    elif dirNorm:
+        pk = pk / vecnorm(pk, 2)  # Exploding gradients (direction normalization)
+
+    if k == 0: F.clear()
+    '''
+    pk = -gfk
+    a = []
+    idx = len(sk_vec)
+    for i in range(len(sk_vec)):
+        a.append(numpy.dot(sk_vec[idx - 1 - i].T, pk) / numpy.dot(sk_vec[idx - 1 - i].T, yk_vec[idx - 1 - i]))
+        pk = pk - a[i] * yk_vec[idx - 1 - i]
+    term = np.sum(np.square(F), 0)
+    Hk0 = 1 / np.sqrt(term + eps)
+    pk = Hk0 * pk
+    for i in reversed(range(len(sk_vec))):
+        b = numpy.dot(yk_vec[idx - 1 - i].T, pk) / numpy.dot(yk_vec[idx - 1 - i].T, sk_vec[idx - 1 - i])
+        pk = pk + (a[i] - b) * sk_vec[idx - 1 - i]
+    '''
+
+    flag_ret = 1
+
+    vk = mu * vk - alpha_k[0] * pk
+    wk = wk + vk
+
+    ws = ws + wk  # +mu*vk
+    vs = vs + vk
+
+    gfkp1 = myfprime(wk).reshape(-1, 1)
+    F.append(gfkp1)
+    gfk_vec.append(gfkp1)
+
+    if k % L == 0:
+        wn_bar = ws / L
+        vn_bar = vs / L
+        ws = np.zeros_like(wk)
+        vs = np.zeros_like(wk)
+        if t > 0:
+            if f(wn_bar) > gamma * f(wo_bar):
+                sk_vec.clear()
+                yk_vec.clear()
+                mu = np.minimum(mu / mu_fac, mu_clip)
+                mu = np.maximum(mu, mu_init)
+                if clearF: F.clear()
+                #print("Clearing buffers")
+                wk = wo_bar
+                vk = vo_bar
+                flag_ret = 0
+            if flag_ret:
+                sk = wn_bar - wo_bar
+                fisher = np.asarray(F)[:, :, 0].T
+                yk = np.dot(fisher, np.dot(fisher.T, sk))
+                mu = np.minimum(mu * mu_fac, mu_clip)
+                # yk = (np.sum(fisher, 1, keepdims=True) * sk) / shape(fisher)[-1]
+                # yk = 0
+                # for i in F:
+                #    yk += np.dot(i,np.dot(i.T,sk))
+                # yk = yk/len(F)
+                if np.dot(sk.T, yk) > eps * np.dot(yk.T, yk):
+                    sk_vec.append(sk)
+                    yk_vec.append(yk)
+                    wo_bar = wn_bar
+                    vo_bar = vn_bar
+        else:
+            wo_bar = wn_bar
+            vo_bar = vn_bar
+        t += 1
+        t_vec.append(t)
+
+    if callback is not None:
+        callback(wk)
+    k += 1
+    iter.append(k)
+    mu_val.append(mu)
+    wo_bar_vec.append(wo_bar)  # np.zeros_like(wk)
+    vo_bar_vec.append(vo_bar)  # np.zeros_like(wk)
+    ws_vec.append(ws)  # 0
+    vs_vec.append(vs)  # 0
+    vk_vec.append(vk)  # 0
+    memL.append(len(sk_vec))
+    memF.append(len(F))
+    err.append(f(wk))
+
+    result = OptimizeResult(fun=0, jac=0, hess_inv=0, nfev=0,
+                            njev=0, status=0,
+                            success=(0), message=0, x=wk,
+                            nit=k)
+
+    return result
+
+
+#####################################################################################################################################################
+    
 def rootFinder(a,b,c):
   """return the root of (a * x^2) + b*x + c =0"""
   r = b**2 - 4*a*c
@@ -6964,6 +7636,7 @@ def show_options(solver=None, method=None, disp=True):
     doc_routines = {
         'minimize': (
             ('bfgs', 'scipy.optimize.optimize._minimize_bfgs'),
+            ('naq', 'scipy.optimize.optimize._minimize_naq'),
             ('olmoq', 'scipy.optimize.optimize._minimize_olmoq'),
             ('olnaq', 'scipy.optimize.optimize._minimize_olnaq'),
             ('olbfgs', 'scipy.optimize.optimize._minimize_olbfgs'),            
@@ -6973,6 +7646,9 @@ def show_options(solver=None, method=None, disp=True):
             ('omoq', 'scipy.optimize.optimize._minimize_omoq'),
             ('onaq', 'scipy.optimize.optimize._minimize_onaq'),
             ('obfgs', 'scipy.optimize.optimize._minimize_obfgs'),
+            ('aSMoQ', 'scipy.optimize.optimize._minimize_aSMoQ'),
+            ('aSNAQ', 'scipy.optimize.optimize._minimize_aSNAQ'),
+            ('adaQN', 'scipy.optimize.optimize._minimize_adaQN'),
             ('lsr1', 'scipy.optimize.optimize._minimize_lsr1'),
             ('sr1', 'scipy.optimize.optimize._minimize_sr1'),
             ('sr1n', 'scipy.optimize.optimize._minimize_sr1n'),
