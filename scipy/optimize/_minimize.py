@@ -625,7 +625,7 @@ def minimize(fun, x0, args=(), method=None, jac=None, hess=None,
     elif meth == 'olmoq_/2':
         return _minimize_olmoq_1(fun, x0, args, jac, callback, **options)
     elif meth == 'olmoq_s':
-        return _minimize_olmoq_1(fun, x0, args, jac, callback, **options)
+        return _minimize_olmoq_3(fun, x0, args, jac, callback, **options)
     elif meth == 'olmoq_mb':
         return _minimize_olmoq_mb(fun, x0, args, jac, callback, **options)
     elif meth == 'calc_full_grad':
