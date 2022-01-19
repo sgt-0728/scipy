@@ -7960,9 +7960,9 @@ def show_options(solver=None, method=None, disp=True):
     doc_routines = {
         'minimize': (
             ('bfgs', 'scipy.optimize.optimize._minimize_bfgs'),
-            ('olmoq_2', 'scipy.optimize.optimize._minimize_olmoq_2'),
-            ('olmoq_3', 'scipy.optimize.optimize._minimize_olmoq_3'),
-            ('olmoq_1', 'scipy.optimize.optimize._minimize_olmoq_1'),
+            ('olmoq_0.5', 'scipy.optimize.optimize._minimize_olmoq_2'),
+            ('olmoq_s', 'scipy.optimize.optimize._minimize_olmoq_3'),
+            ('olmoq_/2', 'scipy.optimize.optimize._minimize_olmoq_1'),
             ('olmoq_mb', 'scipy.optimize.optimize._minimize_olmoq_mb'),
             ('calc_full_grad', 'scipy.optimize.optimize.calc_full_grad'),
             ('olnaq', 'scipy.optimize.optimize._minimize_olnaq'),
